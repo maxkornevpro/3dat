@@ -1285,8 +1285,12 @@ async def mines_start(callback: CallbackQuery):
         reply_markup=get_mines_keyboard(bet_amount)
     )
 
-@dp.callback_query(F.data.startswith("mine_") and not F.data.startswith("mine_opened_"))
+@dp.callback_query(F.data.startswith("mine_"))
 async def mines_click(callback: CallbackQuery):
+    if callback.data.startswith("mine_opened_"):
+        await callback.answer("❌ Эта клетка уже открыта!", show_alert=True)
+        return
+    
     user_id = callback.from_user.id
     parts = callback.data.split("_")
     cell = int(parts[1])

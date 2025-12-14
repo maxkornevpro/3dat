@@ -593,3 +593,71 @@ async def get_user_info_by_internal_id(internal_id: int) -> Optional[Dict]:
         }
     return None
 
+async def get_top_by_balance(limit: int = 5) -> List[Dict]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT user_id, stars, internal_id FROM users ORDER BY stars DESC LIMIT ?",
+            (limit,)
+        )
+        users = await cursor.fetchall()
+        return [dict(user) for user in users]
+
+async def get_top_by_income_per_minute(limit: int = 5) -> List[Dict]:
+    from config import FARM_TYPES
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT user_id, internal_id FROM users")
+        all_users = await cursor.fetchall()
+        
+        user_incomes = []
+        for user_row in all_users:
+            user_id = user_row['user_id']
+            internal_id = user_row['internal_id']
+            
+            farms = await get_user_farms(user_id)
+            nfts = await get_user_nfts(user_id)
+            boost = await calculate_total_boost(user_id)
+            
+            total_income_per_hour = 0
+            from datetime import datetime
+            now = datetime.now()
+            
+            for farm in farms:
+                is_active = farm.get('is_active', 0)
+                if is_active:
+                    last_activated = farm.get('last_activated')
+                    if last_activated:
+                        last_activated_dt = datetime.fromisoformat(last_activated)
+                        hours_passed = (now - last_activated_dt).total_seconds() / 3600
+                        if hours_passed < 6:
+                            farm_type = farm['farm_type']
+                            if farm_type in FARM_TYPES:
+                                total_income_per_hour += FARM_TYPES[farm_type]['income_per_hour']
+            
+            total_income_per_hour = int(total_income_per_hour * boost)
+            total_income_per_minute = total_income_per_hour / 60
+            
+            user_incomes.append({
+                'user_id': user_id,
+                'internal_id': internal_id,
+                'income_per_minute': total_income_per_minute
+            })
+        
+        user_incomes.sort(key=lambda x: x['income_per_minute'], reverse=True)
+        return user_incomes[:limit]
+
+async def get_top_by_nft_count(limit: int = 5) -> List[Dict]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("""
+            SELECT u.user_id, u.internal_id, COUNT(n.id) as nft_count
+            FROM users u
+            LEFT JOIN nfts n ON u.user_id = n.user_id
+            GROUP BY u.user_id, u.internal_id
+            ORDER BY nft_count DESC
+            LIMIT ?
+        """, (limit,))
+        users = await cursor.fetchall()
+        return [dict(user) for user in users]
+

@@ -15,12 +15,14 @@ from database import (
     activate_farms, is_banned, ban_user, unban_user,
     admin_add_stars, admin_add_farm, admin_add_nft,
     get_all_users, get_all_chats, add_chat, spend_stars, add_stars,
-    get_user_by_internal_id, get_user_info_by_internal_id
+    get_user_by_internal_id, get_user_info_by_internal_id,
+    get_top_by_balance, get_top_by_income_per_minute, get_top_by_nft_count
 )
 from keyboards import (
     get_main_menu, get_farm_shop_keyboard, 
     get_nft_shop_keyboard, get_back_keyboard, get_auction_keyboard,
-    get_admin_menu, get_casino_menu, get_farm_select_keyboard, get_nft_select_keyboard
+    get_admin_menu, get_casino_menu, get_farm_select_keyboard, get_nft_select_keyboard,
+    get_mines_keyboard
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -43,6 +45,8 @@ logger.info(f"Токен бота загружен (ID бота: {token_parts[0]
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+mines_games = {}
 
 async def ban_check_middleware(handler, event, data):
     if isinstance(event, (Message, CallbackQuery)):
@@ -124,7 +128,8 @@ async def cmd_help(message: Message):
         "🔹 /collect - Собрать доход с ферм\n"
         "🔹 /activate - Активировать фермы (каждые 6 часов)\n"
         "🔹 /referral - Получить реферальную ссылку\n"
-        "🔹 /auction - Показать активные аукционы\n\n"
+        "🔹 /auction - Показать активные аукционы\n"
+        "🔹 /top - Показать топ игроков\n\n"
         "💡 Важно:\n"
         "• Фермы нужно активировать каждые 6 часов\n"
         "• Только активированные фермы приносят доход\n"
@@ -640,6 +645,50 @@ async def show_referral_link_handler(message: Message):
     else:
         await message.reply(referral_text)
 
+@dp.message(Command("top"))
+async def cmd_top(message: Message):
+    top_balance = await get_top_by_balance(5)
+    top_income = await get_top_by_income_per_minute(5)
+    top_nft = await get_top_by_nft_count(5)
+    
+    top_text = "🏆 ТОП ИГРОКОВ\n\n"
+    
+    top_text += "💰 ТОП ПО БАЛАНСУ:\n"
+    for idx, user in enumerate(top_balance, 1):
+        try:
+            tg_user = await bot.get_chat(user['user_id'])
+            username = f"@{tg_user.username}" if tg_user.username else tg_user.full_name or "Неизвестно"
+        except:
+            username = "Неизвестно"
+        medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"][idx - 1]
+        top_text += f"{medal} {username} - {user['stars']} ⭐\n"
+    
+    top_text += "\n📈 ТОП ПО ДОХОДУ В МИНУТУ:\n"
+    for idx, user in enumerate(top_income, 1):
+        try:
+            tg_user = await bot.get_chat(user['user_id'])
+            username = f"@{tg_user.username}" if tg_user.username else tg_user.full_name or "Неизвестно"
+        except:
+            username = "Неизвестно"
+        medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"][idx - 1]
+        income = round(user['income_per_minute'], 2)
+        top_text += f"{medal} {username} - {income} ⭐/мин\n"
+    
+    top_text += "\n🎁 ТОП ПО КОЛИЧЕСТВУ NFT:\n"
+    for idx, user in enumerate(top_nft, 1):
+        try:
+            tg_user = await bot.get_chat(user['user_id'])
+            username = f"@{tg_user.username}" if tg_user.username else tg_user.full_name or "Неизвестно"
+        except:
+            username = "Неизвестно"
+        medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"][idx - 1]
+        top_text += f"{medal} {username} - {user['nft_count']} NFT\n"
+    
+    if message.chat.type == "private":
+        await message.answer(top_text)
+    else:
+        await message.reply(top_text)
+
 @dp.message(Command("auction"))
 async def cmd_auction(message: Message):
     await show_auctions_handler(message)
@@ -1131,7 +1180,7 @@ async def casino_dice(callback: CallbackQuery):
         "🎲 Кости\n\n"
         "Ставка: удвоение\n\n"
         "Отправьте сумму ставки:\n"
-        "<code>/dice amount</code>",
+        "/dice amount",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
         ])
@@ -1166,7 +1215,8 @@ async def cmd_dice(message: Message):
         player_dice = random.randint(1, 6)
         bot_dice = random.randint(1, 6)
         
-        if player_dice > bot_dice:
+        win_chance = random.random()
+        if win_chance < 0.45:
             win = bet * 2
             await add_stars(user_id, win)
             await message.reply(
@@ -1183,72 +1233,160 @@ async def cmd_dice(message: Message):
     except ValueError:
         await message.reply("❌ Неверный формат!")
 
-@dp.callback_query(F.data == "casino_slots")
-async def casino_slots_handler(callback: CallbackQuery):
+@dp.callback_query(F.data == "casino_mines")
+async def casino_mines_handler(callback: CallbackQuery):
     user_id = callback.from_user.id
+    stars = await get_user_stars(user_id)
     await callback.message.edit_text(
-        "🎰 Слоты\n\n"
-        "Ставка: утроение\n\n"
-        "Отправьте сумму ставки:\n"
-        "<code>/slots amount</code>",
+        "💣 Мины\n\n"
+        "Выберите сумму ставки:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="10 ⭐", callback_data="mines_bet_10")],
+            [InlineKeyboardButton(text="50 ⭐", callback_data="mines_bet_50")],
+            [InlineKeyboardButton(text="100 ⭐", callback_data="mines_bet_100")],
+            [InlineKeyboardButton(text="500 ⭐", callback_data="mines_bet_500")],
             [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
         ])
     )
 
-@dp.message(Command("slots"))
-async def cmd_slots(message: Message):
-    user_id = message.from_user.id
-    if await is_banned(user_id):
+@dp.callback_query(F.data.startswith("mines_bet_"))
+async def mines_start(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    bet_amount = int(callback.data.split("_")[2])
+    stars = await get_user_stars(user_id)
+    
+    if bet_amount > stars:
+        await callback.answer("❌ Недостаточно звезд!", show_alert=True)
         return
     
-    args = message.text.split()
-    if len(args) < 2:
-        await message.reply("Использование: /slots amount")
+    if bet_amount < 10:
+        await callback.answer("❌ Минимальная ставка: 10 ⭐", show_alert=True)
         return
     
-    try:
-        bet = int(args[1])
-        stars = await get_user_stars(user_id)
-        
-        if bet < 10:
-            await message.reply("❌ Минимальная ставка: 10 ⭐")
-            return
-        
-        if bet > stars:
-            await message.reply("❌ Недостаточно звезд!")
-            return
-        
-        await spend_stars(user_id, bet)
-        
-        import random
-        symbols = ["🍒", "🍋", "🍊", "🍇", "⭐", "💎"]
-        slot1 = random.choice(symbols)
-        slot2 = random.choice(symbols)
-        slot3 = random.choice(symbols)
-        
-        if slot1 == slot2 == slot3:
-            win = bet * 3
-            await add_stars(user_id, win)
-            await message.reply(
-                f"🎰 [{slot1}] [{slot2}] [{slot3}]\n\n"
-                f"🎉 ДЖЕКПОТ!\n"
-                f"✅ Вы выиграли {win} ⭐!"
-            )
-        elif slot1 == slot2 or slot2 == slot3 or slot1 == slot3:
-            win = bet * 2
-            await add_stars(user_id, win)
-            await message.reply(
-                f"🎰 [{slot1}] [{slot2}] [{slot3}]\n\n"
-                f"✅ Вы выиграли {win} ⭐!"
+    await spend_stars(user_id, bet_amount)
+    
+    import random
+    mines_count = random.randint(3, 5)
+    mines_positions = random.sample(range(25), mines_count)
+    
+    game_key = f"{callback.message.message_id}_{user_id}"
+    mines_games[game_key] = {
+        'mines': mines_positions,
+        'opened': [],
+        'multiplier': 1.0,
+        'bet': bet_amount
+    }
+    
+    await callback.message.edit_text(
+        f"💣 Мины\n\n"
+        f"Ставка: {bet_amount} ⭐\n"
+        f"Мин: {mines_count}\n\n"
+        f"Выберите клетку:",
+        reply_markup=get_mines_keyboard(bet_amount)
+    )
+
+@dp.callback_query(F.data.startswith("mine_") and not F.data.startswith("mine_opened_"))
+async def mines_click(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    parts = callback.data.split("_")
+    cell = int(parts[1])
+    bet_amount = int(parts[2])
+    game_key = f"{callback.message.message_id}_{user_id}"
+    
+    if game_key not in mines_games:
+        await callback.answer("❌ Игра не найдена!", show_alert=True)
+        return
+    
+    game = mines_games[game_key]
+    mines_positions = game['mines']
+    opened = game['opened']
+    multiplier = game['multiplier']
+    
+    if cell in opened:
+        await callback.answer("❌ Эта клетка уже открыта!", show_alert=True)
+        return
+    
+    if cell in mines_positions:
+        opened.append(cell)
+        del mines_games[game_key]
+        await callback.answer("💣 МИНА! Вы проиграли!", show_alert=True)
+        await callback.message.edit_text(
+            f"💣 Мины\n\n"
+            f"❌ Вы наступили на мину!\n"
+            f"Проиграно: {bet_amount} ⭐",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
+            ])
+        )
+        return
+    
+    opened.append(cell)
+    multiplier += 0.1
+    game['multiplier'] = multiplier
+    game['opened'] = opened
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+    for i in range(25):
+        row = i // 5
+        col = i % 5
+        if col == 0:
+            keyboard.inline_keyboard.append([])
+        if i in opened:
+            keyboard.inline_keyboard[row].append(
+                InlineKeyboardButton(text="✅", callback_data=f"mine_opened_{i}_{bet_amount}")
             )
         else:
-            await message.reply(
-                f"🎰 [{slot1}] [{slot2}] [{slot3}]\n\n"
-                f"❌ Вы проиграли {bet} ⭐"
+            keyboard.inline_keyboard[row].append(
+                InlineKeyboardButton(text="❓", callback_data=f"mine_{i}_{bet_amount}")
             )
-    except ValueError:
-        await message.reply("❌ Неверный формат!")
+    
+    keyboard.inline_keyboard.append([
+        InlineKeyboardButton(text=f"💰 Забрать ({round(multiplier, 1)}x)", callback_data=f"mines_cashout_{bet_amount}"),
+        InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")
+    ])
+    
+    await callback.message.edit_text(
+        f"💣 Мины\n\n"
+        f"Ставка: {bet_amount} ⭐\n"
+        f"Множитель: {round(multiplier, 1)}x\n"
+        f"Открыто: {len(opened)}/25\n\n"
+        f"Выберите клетку:",
+        reply_markup=keyboard
+    )
+    await callback.answer("✅ Безопасно!")
+
+@dp.callback_query(F.data.startswith("mine_opened_"))
+async def mines_opened_click(callback: CallbackQuery):
+    await callback.answer("❌ Эта клетка уже открыта!", show_alert=True)
+
+@dp.callback_query(F.data.startswith("mines_cashout_"))
+async def mines_cashout(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    bet_amount = int(callback.data.split("_")[2])
+    game_key = f"{callback.message.message_id}_{user_id}"
+    
+    if game_key not in mines_games:
+        await callback.answer("❌ Ошибка!", show_alert=True)
+        return
+    
+    game = mines_games[game_key]
+    multiplier = game['multiplier']
+    win = int(bet_amount * multiplier)
+    await add_stars(user_id, win)
+    
+    del mines_games[game_key]
+    
+    await callback.message.edit_text(
+        f"💣 Мины\n\n"
+        f"✅ Вы забрали выигрыш!\n\n"
+        f"Ставка: {bet_amount} ⭐\n"
+        f"Множитель: {round(multiplier, 1)}x\n"
+        f"Выигрыш: {win} ⭐",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
+        ])
+    )
+    await callback.answer(f"✅ Выигрыш: {win} ⭐!", show_alert=True)
 
 @dp.callback_query(F.data == "casino_roulette")
 async def casino_roulette_handler(callback: CallbackQuery):
@@ -1257,7 +1395,7 @@ async def casino_roulette_handler(callback: CallbackQuery):
         "🎯 Рулетка\n\n"
         "Ставка: учетверение\n\n"
         "Отправьте сумму ставки:\n"
-        "<code>/roulette amount</code>",
+        "/roulette amount",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
         ])

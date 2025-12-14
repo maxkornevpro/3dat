@@ -95,9 +95,25 @@ def get_admin_menu():
 def get_casino_menu():
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎲 Кости (x2)", callback_data="casino_dice")],
-        [InlineKeyboardButton(text="🎰 Слоты (x3)", callback_data="casino_slots")],
+        [InlineKeyboardButton(text="💣 Мины", callback_data="casino_mines")],
         [InlineKeyboardButton(text="🎯 Рулетка (x5)", callback_data="casino_roulette")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
+    ])
+    return keyboard
+
+def get_mines_keyboard(bet_amount: int):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+    for i in range(25):
+        row = i // 5
+        col = i % 5
+        if col == 0:
+            keyboard.inline_keyboard.append([])
+        keyboard.inline_keyboard[row].append(
+            InlineKeyboardButton(text="❓", callback_data=f"mine_{i}_{bet_amount}")
+        )
+    keyboard.inline_keyboard.append([
+        InlineKeyboardButton(text="💰 Забрать", callback_data=f"mines_cashout_{bet_amount}"),
+        InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")
     ])
     return keyboard
 

@@ -20,9 +20,9 @@ from database import (
 )
 from keyboards import (
     get_main_menu, get_farm_shop_keyboard, 
-    get_nft_shop_keyboard, get_back_keyboard, get_auction_keyboard,
-    get_admin_menu, get_casino_menu, get_farm_select_keyboard, get_nft_select_keyboard,
-    get_mines_keyboard
+    get_nft_shop_keyboard, get_casino_menu, 
+    get_mines_keyboard, get_mines_bet_keyboard,
+    get_dice_choice_keyboard, get_dice_bet_keyboard, get_slots_bet_keyboard
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -47,6 +47,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 mines_games = {}
+pending_bets = {}
 
 async def ban_check_middleware(handler, event, data):
     if isinstance(event, (Message, CallbackQuery)):
@@ -450,6 +451,10 @@ async def cmd_activate(message: Message):
     else:
         await message.reply(response)
 
+@dp.message(F.text == "⚡ Активировать фермы")
+async def activate_farms_button(message: Message):
+    await cmd_activate(message)
+
 @dp.message(Command("collect"))
 async def cmd_collect(message: Message):
     await collect_income_handler(message)
@@ -457,6 +462,67 @@ async def cmd_collect(message: Message):
 @dp.message(F.text == "💰 Собрать доход")
 async def collect_income(message: Message):
     await collect_income_handler(message)
+
+@dp.message(Command("casino"))
+async def cmd_casino(message: Message):
+    if message.chat.type == "private":
+        await message.answer("🎰 Казино\n\nВыберите игру:", reply_markup=get_casino_menu())
+    else:
+        await message.reply("🎰 Казино\n\nВ группах используйте команды.")
+
+@dp.message(F.text == "🎰 Казино")
+async def show_casino(message: Message):
+    await cmd_casino(message)
+
+@dp.message(Command("auction"))
+async def cmd_auction(message: Message):
+    from datetime import datetime
+
+    auctions = await get_active_auctions()
+    if not auctions:
+        if message.chat.type == "private":
+            await message.answer("🔨 Аукцион\n\nСейчас нет активных аукционов.")
+        else:
+            await message.reply("🔨 Аукцион\n\nСейчас нет активных аукционов.")
+        return
+
+    text = "🔨 Аукцион\n\nАктивные лоты:\n\n"
+    now = datetime.now()
+    for auction in auctions:
+        farm_type = auction.get("farm_type")
+        farm_name = FARM_TYPES.get(farm_type, {}).get("name", str(farm_type))
+
+        end_time_raw = auction.get("end_time")
+        time_left_text = ""
+        if end_time_raw:
+            try:
+                end_time = datetime.fromisoformat(end_time_raw)
+                delta = end_time - now
+                minutes_left = max(0, int(delta.total_seconds() // 60))
+                hours = minutes_left // 60
+                minutes = minutes_left % 60
+                time_left_text = f"⏳ Осталось: {hours}ч {minutes}м\n"
+            except Exception:
+                time_left_text = ""
+
+        text += (
+            f"🆔 ID: {auction.get('id')}\n"
+            f"🌾 Лот: {farm_name}\n"
+            f"💰 Текущая ставка: {auction.get('current_bid')} ⭐\n"
+            f"{time_left_text}"
+            "\n"
+        )
+
+    text += "Чтобы сделать ставку: /bid <id> <сумма>"
+
+    if message.chat.type == "private":
+        await message.answer(text)
+    else:
+        await message.reply(text)
+
+@dp.message(F.text == "🔨 Аукцион")
+async def show_auction(message: Message):
+    await cmd_auction(message)
 
 async def collect_income_handler(message: Message):
     user_id = message.from_user.id
@@ -578,11 +644,61 @@ async def casino_mines_handler(callback: CallbackQuery):
         "Выберите сумму ставки:",
         reply_markup=get_mines_bet_keyboard()
     )
+    await callback.answer()
+
+@dp.callback_query(F.data == "mines_custom_bet")
+async def mines_custom_bet(callback: CallbackQuery):
+    pending_bets[callback.from_user.id] = "mines"
+    await callback.message.edit_text(
+        "💣 Мины\n\nВведите сумму ставки (мин. 10 ⭐):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="casino_mines")]
+        ])
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "casino_dice")
+async def casino_dice_handler(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "🎲 Кости\n\nВыберите сумму ставки:",
+        reply_markup=get_dice_bet_keyboard()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "dice_custom_bet")
+async def dice_custom_bet(callback: CallbackQuery):
+    pending_bets[callback.from_user.id] = "dice"
+    await callback.message.edit_text(
+        "🎲 Кости\n\nВведите сумму ставки (мин. 10 ⭐):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="casino_dice")]
+        ])
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "casino_slots")
+async def casino_slots_handler(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "🎰 Слоты\n\nВыберите сумму ставки:",
+        reply_markup=get_slots_bet_keyboard()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "slots_custom_bet")
+async def slots_custom_bet(callback: CallbackQuery):
+    pending_bets[callback.from_user.id] = "slots"
+    await callback.message.edit_text(
+        "🎰 Слоты\n\nВведите сумму ставки (мин. 10 ⭐):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="casino_slots")]
+        ])
+    )
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("buy_nft_"))
 async def handle_buy_nft(callback: CallbackQuery):
     try:
-        nft_id = int(callback.data.split("_")[2])
+        nft_id = callback.data.split("_")[2]
         user_id = callback.from_user.id
         
         if nft_id not in NFT_GIFTS:
@@ -598,13 +714,12 @@ async def handle_buy_nft(callback: CallbackQuery):
         
         # Check if user already has this NFT
         user_nfts = await get_user_nfts(user_id)
-        if any(nft['nft_id'] == nft_id for nft in user_nfts):
+        if any(item.get('nft_type') == nft_id for item in user_nfts):
             await callback.answer("❌ У вас уже есть этот NFT!", show_alert=True)
             return
         
         success = await buy_nft(user_id, nft_id)
         if success:
-            await spend_stars(user_id, nft['price'])
             await callback.answer(f"🎉 Поздравляем! Вы купили {nft['name']}!", show_alert=True)
             await show_nft_shop_handler(callback.message)
         else:
@@ -616,8 +731,12 @@ async def handle_buy_nft(callback: CallbackQuery):
 @dp.message(F.text.isdigit())
 async def handle_mines_bet(message: Message):
     try:
-        bet_amount = int(message.text)
         user_id = message.from_user.id
+        pending_game = pending_bets.get(user_id)
+        if pending_game not in ("mines", "dice", "slots"):
+            return
+
+        bet_amount = int(message.text)
         stars = await get_user_stars(user_id)
         
         if bet_amount < 10:
@@ -628,29 +747,145 @@ async def handle_mines_bet(message: Message):
             await message.reply("❌ Недостаточно звезд!", reply_markup=get_casino_menu())
             return
             
-        await spend_stars(user_id, bet_amount)
-        
-        import random
-        mines_count = random.randint(3, 5)
-        mines_positions = random.sample(range(25), mines_count)
-        
-        game_key = f"{message.message_id + 1}_{user_id}"  # Using next message ID
-        mines_games[game_key] = {
-            'mines': mines_positions,
-            'opened': [],
-            'multiplier': 1.0,
-            'bet': bet_amount
-        }
-        
-        await message.answer(
-            f"💣 Мины\n\n"
-            f"Ставка: {bet_amount} ⭐\n"
-            f"Мин: {mines_count}\n\n"
-            f"Выберите клетку:",
-            reply_markup=get_mines_keyboard(bet_amount)
-        )
+        if pending_game == "mines":
+            pending_bets.pop(user_id, None)
+            await spend_stars(user_id, bet_amount)
+
+            import random
+            mines_count = random.randint(3, 5)
+            mines_positions = random.sample(range(25), mines_count)
+
+            game_key = f"{message.message_id + 1}_{user_id}"  # Using next message ID
+            mines_games[game_key] = {
+                'mines': mines_positions,
+                'opened': [],
+                'multiplier': 1.0,
+                'bet': bet_amount
+            }
+
+            await message.answer(
+                f"💣 Мины\n\n"
+                f"Ставка: {bet_amount} ⭐\n"
+                f"Мин: {mines_count}\n\n"
+                f"Выберите клетку:",
+                reply_markup=get_mines_keyboard(bet_amount)
+            )
+            return
+
+        if pending_game == "dice":
+            pending_bets.pop(user_id, None)
+            await message.answer(
+                f"🎲 Кости\n\nСтавка: {bet_amount} ⭐\n\nВыберите: чёт или нечёт",
+                reply_markup=get_dice_choice_keyboard(bet_amount)
+            )
+            return
+
+        if pending_game == "slots":
+            pending_bets.pop(user_id, None)
+            await spend_stars(user_id, bet_amount)
+
+            slots_msg = await bot.send_dice(chat_id=message.chat.id, emoji="🎰")
+            value = slots_msg.dice.value
+
+            if value == 64:
+                win = bet_amount * 5
+                await add_stars(user_id, win)
+                await message.answer(f"🎰 Джекпот!\n✅ Вы выиграли {win} ⭐!")
+            elif value in (1, 22, 43):
+                win = bet_amount * 2
+                await add_stars(user_id, win)
+                await message.answer(f"🎰 Удачно!\n✅ Вы выиграли {win} ⭐!")
+            else:
+                await message.answer(f"🎰 Не повезло\n❌ Вы проиграли {bet_amount} ⭐")
+            return
     except ValueError:
         await message.reply("❌ Пожалуйста, введите корректное число", reply_markup=get_casino_menu())
+
+@dp.callback_query(F.data.startswith("dice_bet_"))
+async def dice_bet_selected(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    bet_amount = int(callback.data.split("_")[2])
+    stars = await get_user_stars(user_id)
+
+    if bet_amount > stars:
+        await callback.answer("❌ Недостаточно звезд!", show_alert=True)
+        return
+
+    if bet_amount < 10:
+        await callback.answer("❌ Минимальная ставка: 10 ⭐", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        f"🎲 Кости\n\nСтавка: {bet_amount} ⭐\n\nВыберите: чёт или нечёт",
+        reply_markup=get_dice_choice_keyboard(bet_amount)
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("dice_play_"))
+async def dice_play(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    parts = callback.data.split("_")
+    if len(parts) != 4:
+        await callback.answer("❌ Ошибка!", show_alert=True)
+        return
+
+    choice = parts[2]
+    bet_amount = int(parts[3])
+    stars = await get_user_stars(user_id)
+
+    if bet_amount > stars:
+        await callback.answer("❌ Недостаточно звезд!", show_alert=True)
+        return
+
+    if bet_amount < 10:
+        await callback.answer("❌ Минимальная ставка: 10 ⭐", show_alert=True)
+        return
+
+    await spend_stars(user_id, bet_amount)
+    dice_msg = await bot.send_dice(chat_id=callback.message.chat.id, emoji="🎲")
+    value = dice_msg.dice.value
+
+    choice_even = choice == "even"
+    is_even = (value % 2 == 0)
+    if is_even == choice_even:
+        win = bet_amount * 2
+        await add_stars(user_id, win)
+        await callback.message.answer(f"🎲 Выпало: {value}\n✅ Вы выиграли {win} ⭐!")
+    else:
+        await callback.message.answer(f"🎲 Выпало: {value}\n❌ Вы проиграли {bet_amount} ⭐")
+
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("slots_bet_"))
+async def slots_start(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    bet_amount = int(callback.data.split("_")[2])
+    stars = await get_user_stars(user_id)
+
+    if bet_amount > stars:
+        await callback.answer("❌ Недостаточно звезд!", show_alert=True)
+        return
+
+    if bet_amount < 10:
+        await callback.answer("❌ Минимальная ставка: 10 ⭐", show_alert=True)
+        return
+
+    await spend_stars(user_id, bet_amount)
+    slots_msg = await bot.send_dice(chat_id=callback.message.chat.id, emoji="🎰")
+    value = slots_msg.dice.value
+
+    if value == 64:
+        win = bet_amount * 5
+        await add_stars(user_id, win)
+        await callback.message.answer(f"🎰 Джекпот!\n✅ Вы выиграли {win} ⭐!")
+    elif value in (1, 22, 43):
+        win = bet_amount * 2
+        await add_stars(user_id, win)
+        await callback.message.answer(f"🎰 Удачно!\n✅ Вы выиграли {win} ⭐!")
+    else:
+        await callback.message.answer(f"🎰 Не повезло\n❌ Вы проиграли {bet_amount} ⭐")
+
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("mines_bet_"))
 async def mines_start(callback: CallbackQuery):

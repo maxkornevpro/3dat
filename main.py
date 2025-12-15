@@ -581,11 +581,37 @@ async def casino_mines_handler(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("buy_nft_"))
 async def handle_buy_nft(callback: CallbackQuery):
-        "💣 Введите сумму ставки (мин. 10 ⭐):",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="casino_mines")]
-        ])
-    )
+    try:
+        nft_id = int(callback.data.split("_")[2])
+        user_id = callback.from_user.id
+        
+        if nft_id not in NFT_GIFTS:
+            await callback.answer("❌ Такого NFT не существует!", show_alert=True)
+            return
+        
+        nft = NFT_GIFTS[nft_id]
+        user_stars = await get_user_stars(user_id)
+        
+        if user_stars < nft['price']:
+            await callback.answer(f"❌ Недостаточно звезд! Нужно {nft['price']} ⭐", show_alert=True)
+            return
+        
+        # Check if user already has this NFT
+        user_nfts = await get_user_nfts(user_id)
+        if any(nft['nft_id'] == nft_id for nft in user_nfts):
+            await callback.answer("❌ У вас уже есть этот NFT!", show_alert=True)
+            return
+        
+        success = await buy_nft(user_id, nft_id)
+        if success:
+            await spend_stars(user_id, nft['price'])
+            await callback.answer(f"🎉 Поздравляем! Вы купили {nft['name']}!", show_alert=True)
+            await show_nft_shop_handler(callback.message)
+        else:
+            await callback.answer("❌ Ошибка при покупке NFT. Попробуйте позже.", show_alert=True)
+    except Exception as e:
+        logger.error(f"Error in handle_buy_nft: {str(e)}")
+        await callback.answer("❌ Произошла ошибка. Пожалуйста, попробуйте позже.", show_alert=True)
 
 @dp.message(F.text.isdigit())
 async def handle_mines_bet(message: Message):

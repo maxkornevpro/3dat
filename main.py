@@ -567,6 +567,9 @@ async def handle_buy_farm(callback: CallbackQuery):
         stars = await get_user_stars(user_id)
         await callback.answer(
             f"❌ Недостаточно звезд! Нужно {farm_data['price']}, у вас {stars}",
+            show_alert=True
+        )
+
 @dp.callback_query(F.data == "casino_mines")
 async def casino_mines_handler(callback: CallbackQuery):
     from keyboards import get_mines_bet_keyboard

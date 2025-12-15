@@ -5,7 +5,7 @@ INITIAL_STARS = 200
 FARM_BASE_PRICE = 50
 FARM_BASE_INCOME = 5
 
-ADMIN_IDS = [5538590798, 891015442, 5253753886]
+ADMIN_IDS = [5538590798, 891015442, 5253753886, 1246190987]
 
 NFT_GIFTS = {
     "snoop_dogg": {
@@ -61,6 +61,57 @@ NFT_GIFTS = {
 }
 
 REFERRAL_REWARD = 100
+
+CRYSTAL_SHOP = {
+    "stars_500": {
+        "name": "⭐ 500 звезд",
+        "price": 5,
+        "stars": 500
+    },
+    "stars_2000": {
+        "name": "⭐ 2000 звезд",
+        "price": 15,
+        "stars": 2000
+    },
+    "stars_10000": {
+        "name": "⭐ 10000 звезд",
+        "price": 60,
+        "stars": 10000
+    }
+}
+
+CRYSTAL_CASES = {
+    "bronze": {
+        "name": "🥉 Бронзовый кейс",
+        "price": 3,
+        "rewards": [
+            {"type": "stars", "amount": 200, "weight": 60},
+            {"type": "stars", "amount": 500, "weight": 25},
+            {"type": "crystals", "amount": 1, "weight": 10},
+            {"type": "nft", "weight": 5}
+        ]
+    },
+    "silver": {
+        "name": "🥈 Серебряный кейс",
+        "price": 8,
+        "rewards": [
+            {"type": "stars", "amount": 800, "weight": 55},
+            {"type": "stars", "amount": 2000, "weight": 25},
+            {"type": "crystals", "amount": 2, "weight": 15},
+            {"type": "nft", "weight": 5}
+        ]
+    },
+    "gold": {
+        "name": "🥇 Золотой кейс",
+        "price": 20,
+        "rewards": [
+            {"type": "stars", "amount": 2500, "weight": 45},
+            {"type": "stars", "amount": 7000, "weight": 25},
+            {"type": "crystals", "amount": 5, "weight": 20},
+            {"type": "nft", "weight": 10}
+        ]
+    }
+}
 
 FARM_TYPES = {
     "starter": {
@@ -124,5 +175,4 @@ FARM_TYPES = {
         "income_per_hour": 9000000
     }
 }
-
 

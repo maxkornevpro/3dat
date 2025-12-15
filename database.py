@@ -11,6 +11,7 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
                 stars INTEGER DEFAULT 200,
+                crystals INTEGER DEFAULT 0,
                 last_collect TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -18,6 +19,12 @@ async def init_db():
         
         try:
             await db.execute("ALTER TABLE users ADD COLUMN internal_id INTEGER")
+            await db.commit()
+        except:
+            pass
+
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN crystals INTEGER DEFAULT 0")
             await db.commit()
         except:
             pass
@@ -49,6 +56,21 @@ async def init_db():
                 last_activated TIMESTAMP,
                 is_active BOOLEAN DEFAULT 0,
                 FOREIGN KEY (user_id) REFERENCES users (user_id)
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS farm_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                seller_id INTEGER,
+                buyer_id INTEGER,
+                farm_id INTEGER,
+                price INTEGER,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (seller_id) REFERENCES users (user_id),
+                FOREIGN KEY (buyer_id) REFERENCES users (user_id),
+                FOREIGN KEY (farm_id) REFERENCES farms (id)
             )
         """)
         
@@ -119,47 +141,62 @@ async def get_next_internal_id() -> int:
 async def get_or_create_user(user_id: int) -> Dict:
     async with aiosqlite.connect(DB_NAME) as db:
         db.row_factory = aiosqlite.Row
+        await db.execute("BEGIN IMMEDIATE")
+
         cursor = await db.execute(
             "SELECT * FROM users WHERE user_id = ?",
             (user_id,)
         )
         user = await cursor.fetchone()
-        
+
         if not user:
             internal_id = await get_next_internal_id()
             await db.execute(
-                "INSERT INTO users (user_id, internal_id, stars, last_collect) VALUES (?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO users (user_id, internal_id, stars, last_collect) VALUES (?, ?, ?, ?)",
                 (user_id, internal_id, 200, datetime.now().isoformat())
             )
-            await db.commit()
-            cursor = await db.execute(
-                "SELECT * FROM users WHERE user_id = ?",
-                (user_id,)
-            )
-            user = await cursor.fetchone()
-        elif user['internal_id'] is None:
+
+        cursor = await db.execute(
+            "SELECT * FROM users WHERE user_id = ?",
+            (user_id,)
+        )
+        user = await cursor.fetchone()
+
+        if user and user['internal_id'] is None:
             internal_id = await get_next_internal_id()
             await db.execute(
                 "UPDATE users SET internal_id = ? WHERE user_id = ?",
                 (internal_id, user_id)
             )
-            await db.commit()
             cursor = await db.execute(
                 "SELECT * FROM users WHERE user_id = ?",
                 (user_id,)
             )
             user = await cursor.fetchone()
-        
+
+        await db.commit()
         return dict(user)
 
 async def get_user_stars(user_id: int) -> int:
     user = await get_or_create_user(user_id)
     return user['stars']
 
+async def get_user_crystals(user_id: int) -> int:
+    user = await get_or_create_user(user_id)
+    return user.get('crystals', 0) or 0
+
 async def add_stars(user_id: int, amount: int):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
             "UPDATE users SET stars = stars + ? WHERE user_id = ?",
+            (amount, user_id)
+        )
+        await db.commit()
+
+async def add_crystals(user_id: int, amount: int):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "UPDATE users SET crystals = COALESCE(crystals, 0) + ? WHERE user_id = ?",
             (amount, user_id)
         )
         await db.commit()
@@ -175,6 +212,46 @@ async def spend_stars(user_id: int, amount: int) -> bool:
             await db.commit()
         return True
     return False
+
+async def spend_crystals(user_id: int, amount: int) -> bool:
+    current = await get_user_crystals(user_id)
+    if current >= amount:
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute(
+                "UPDATE users SET crystals = COALESCE(crystals, 0) - ? WHERE user_id = ?",
+                (amount, user_id)
+            )
+            await db.commit()
+        return True
+    return False
+
+async def transfer_crystals(from_user_id: int, to_user_id: int, amount: int) -> bool:
+    if amount <= 0:
+        return False
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("BEGIN IMMEDIATE")
+
+        cursor = await db.execute(
+            "SELECT COALESCE(crystals, 0) FROM users WHERE user_id = ?",
+            (from_user_id,)
+        )
+        row = await cursor.fetchone()
+        from_balance = row[0] if row else 0
+        if from_balance < amount:
+            await db.commit()
+            return False
+
+        await db.execute(
+            "UPDATE users SET crystals = COALESCE(crystals, 0) - ? WHERE user_id = ?",
+            (amount, from_user_id)
+        )
+        await db.execute(
+            "UPDATE users SET crystals = COALESCE(crystals, 0) + ? WHERE user_id = ?",
+            (amount, to_user_id)
+        )
+        await db.commit()
+        return True
 
 async def buy_farm(user_id: int, farm_type: str) -> bool:
     from config import FARM_TYPES
@@ -340,6 +417,82 @@ async def collect_farm_income(user_id: int) -> int:
         await add_stars(user_id, total_income)
     
     return total_income
+
+async def collect_farm_income_with_crystals(user_id: int) -> tuple[int, int]:
+    income = await collect_farm_income(user_id)
+    farms = await get_user_farms(user_id)
+    if not farms:
+        return income, 0
+
+    import random
+    crystals_gained = 0
+    for farm in farms:
+        if not farm.get('is_active', 0):
+            continue
+        if random.random() < 0.01:
+            crystals_gained += 1
+
+    if crystals_gained > 0:
+        await add_crystals(user_id, crystals_gained)
+
+    return income, crystals_gained
+
+async def create_farm_trade(seller_id: int, buyer_id: int, farm_id: int, price: int) -> Optional[int]:
+    if price <= 0:
+        return None
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            "SELECT id FROM farms WHERE id = ? AND user_id = ?",
+            (farm_id, seller_id)
+        )
+        farm = await cursor.fetchone()
+        if not farm:
+            return None
+
+        cursor = await db.execute(
+            "INSERT INTO farm_trades (seller_id, buyer_id, farm_id, price, status) VALUES (?, ?, ?, ?, 'pending')",
+            (seller_id, buyer_id, farm_id, price)
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+async def get_farm_trade(trade_id: int) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM farm_trades WHERE id = ?",
+            (trade_id,)
+        )
+        trade = await cursor.fetchone()
+        return dict(trade) if trade else None
+
+async def set_farm_trade_status(trade_id: int, status: str):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "UPDATE farm_trades SET status = ? WHERE id = ?",
+            (status, trade_id)
+        )
+        await db.commit()
+
+async def transfer_farm_ownership(farm_id: int, from_user_id: int, to_user_id: int) -> bool:
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        cursor = await db.execute(
+            "SELECT id FROM farms WHERE id = ? AND user_id = ?",
+            (farm_id, from_user_id)
+        )
+        farm = await cursor.fetchone()
+        if not farm:
+            await db.commit()
+            return False
+
+        await db.execute(
+            "UPDATE farms SET user_id = ? WHERE id = ?",
+            (to_user_id, farm_id)
+        )
+        await db.commit()
+        return True
 
 async def register_referral(referrer_id: int, referred_id: int) -> bool:
     if referrer_id == referred_id:
@@ -589,7 +742,8 @@ async def get_user_info_by_internal_id(internal_id: int) -> Optional[Dict]:
         return {
             'user_id': user['user_id'],
             'internal_id': user['internal_id'],
-            'stars': user['stars']
+            'stars': user['stars'],
+            'crystals': user.get('crystals', 0) or 0
         }
     return None
 

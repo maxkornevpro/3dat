@@ -7,8 +7,9 @@ def get_main_menu():
             [KeyboardButton(text="⭐ Мой профиль"), KeyboardButton(text="🌾 Мои фермы")],
             [KeyboardButton(text="🛒 Магазин ферм"), KeyboardButton(text="🎁 Магазин NFT")],
             [KeyboardButton(text="💰 Собрать доход"), KeyboardButton(text="⚡ Активировать фермы")],
-            [KeyboardButton(text="🎁 Кейсы"), KeyboardButton(text="🔗 Реферальная ссылка")],
-            [KeyboardButton(text="🔨 Аукцион"), KeyboardButton(text="🎰 Казино")]
+            [KeyboardButton(text="🎁 Кейсы"), KeyboardButton(text="🎒 Инвентарь"), KeyboardButton(text="🏁 Конкурсы")],
+            [KeyboardButton(text="🔗 Реферальная ссылка")],
+            [KeyboardButton(text="🏆 Топ игроков"), KeyboardButton(text="🔨 Аукцион"), KeyboardButton(text="🎰 Казино")]
         ],
         resize_keyboard=True
     )
@@ -83,6 +84,19 @@ def get_mines_bet_keyboard():
         [InlineKeyboardButton(text="500 ⭐", callback_data="mines_bet_500")],
         [InlineKeyboardButton(text="🎲 Своя ставка", callback_data="mines_custom_bet")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
+    ])
+
+def get_mines_difficulty_keyboard(bet_amount: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="💣 3 мины", callback_data=f"mines_diff_3_{bet_amount}"),
+            InlineKeyboardButton(text="💣 5 мин", callback_data=f"mines_diff_5_{bet_amount}")
+        ],
+        [
+            InlineKeyboardButton(text="💣 7 мин", callback_data=f"mines_diff_7_{bet_amount}"),
+            InlineKeyboardButton(text="💣 10 мин", callback_data=f"mines_diff_10_{bet_amount}")
+        ],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="casino_mines")]
     ])
 
 def get_mines_keyboard(bet_amount):

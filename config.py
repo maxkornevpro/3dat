@@ -85,9 +85,11 @@ CRYSTAL_CASES = {
         "name": "🥉 Бронзовый кейс",
         "price": 3,
         "rewards": [
-            {"type": "stars", "amount": 200, "weight": 60},
-            {"type": "stars", "amount": 500, "weight": 25},
-            {"type": "crystals", "amount": 1, "weight": 10},
+            {"type": "stars", "amount": 1200, "weight": 60},
+            {"type": "stars", "amount": 3000, "weight": 25},
+            {"type": "crystals", "amount": 1, "weight": 15},
+            {"type": "item", "item_key": "prefix_rookie", "qty": 1, "weight": 3},
+            {"type": "item", "item_key": "collectible_chip", "qty": 1, "weight": 2},
             {"type": "nft", "weight": 5}
         ]
     },
@@ -95,9 +97,12 @@ CRYSTAL_CASES = {
         "name": "🥈 Серебряный кейс",
         "price": 8,
         "rewards": [
-            {"type": "stars", "amount": 800, "weight": 55},
-            {"type": "stars", "amount": 2000, "weight": 25},
-            {"type": "crystals", "amount": 2, "weight": 15},
+            {"type": "stars", "amount": 6000, "weight": 55},
+            {"type": "stars", "amount": 15000, "weight": 25},
+            {"type": "stars", "amount": 35000, "weight": 10},
+            {"type": "crystals", "amount": 3, "weight": 10},
+            {"type": "item", "item_key": "prefix_veteran", "qty": 1, "weight": 4},
+            {"type": "item", "item_key": "collectible_relic", "qty": 1, "weight": 3},
             {"type": "nft", "weight": 5}
         ]
     },
@@ -105,13 +110,40 @@ CRYSTAL_CASES = {
         "name": "🥇 Золотой кейс",
         "price": 20,
         "rewards": [
-            {"type": "stars", "amount": 2500, "weight": 45},
-            {"type": "stars", "amount": 7000, "weight": 25},
-            {"type": "crystals", "amount": 5, "weight": 20},
+            {"type": "stars", "amount": 30000, "weight": 50},
+            {"type": "stars", "amount": 100000, "weight": 25},
+            {"type": "stars", "amount": 250000, "weight": 10},
+            {"type": "crystals", "amount": 7, "weight": 10},
+            {"type": "item", "item_key": "prefix_legend", "qty": 1, "weight": 6},
+            {"type": "item", "item_key": "collectible_artifact", "qty": 1, "weight": 4},
             {"type": "nft", "weight": 10}
         ]
     }
 }
+
+CASE_ITEMS = {
+    "prefix_rookie": {"name": "[ROOKIE]", "type": "prefix"},
+    "prefix_veteran": {"name": "[VETERAN]", "type": "prefix"},
+    "prefix_legend": {"name": "[LEGEND]", "type": "prefix"},
+    "collectible_chip": {"name": "🧩 Чип коллекционера", "type": "collectible"},
+    "collectible_relic": {"name": "🗿 Реликвия", "type": "collectible"},
+    "collectible_artifact": {"name": "🏺 Артефакт", "type": "collectible"}
+}
+
+CONTESTS = [
+    {
+        "title": "Войди в ТОП-3 по балансу",
+        "description": "Займи место в ТОП-3 игроков по ⭐ и получи награду.",
+        "reward": "NFT (выдаётся админом) за 300 ⭐ (условно)",
+        "how_to": "Проверь /top и напиши в поддержку, если ты в ТОП-3."
+    },
+    {
+        "title": "Собери коллекцию",
+        "description": "Собери предметы из кейсов и получи уникальный префикс.",
+        "reward": "Префикс [COLLECTOR] (выдаётся админом)",
+        "how_to": "Покажи /inventory в поддержку."
+    }
+]
 
 FARM_TYPES = {
     "starter": {

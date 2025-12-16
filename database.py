@@ -83,6 +83,41 @@ async def init_db():
                 FOREIGN KEY (user_id) REFERENCES users (user_id)
             )
         """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_items (
+                user_id INTEGER,
+                item_key TEXT,
+                qty INTEGER DEFAULT 0,
+                PRIMARY KEY (user_id, item_key),
+                FOREIGN KEY (user_id) REFERENCES users (user_id)
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id INTEGER PRIMARY KEY,
+                prefix TEXT,
+                FOREIGN KEY (user_id) REFERENCES users (user_id)
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS item_auctions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                seller_id INTEGER,
+                item_key TEXT,
+                qty INTEGER,
+                starting_price INTEGER,
+                current_bid INTEGER,
+                current_bidder_id INTEGER,
+                end_time TIMESTAMP,
+                status TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (seller_id) REFERENCES users (user_id),
+                FOREIGN KEY (current_bidder_id) REFERENCES users (user_id)
+            )
+        """)
         
         await db.execute("""
             CREATE TABLE IF NOT EXISTS referrals (
@@ -119,7 +154,7 @@ async def init_db():
                 banned_by INTEGER
             )
         """)
-        
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS chats (
                 chat_id INTEGER PRIMARY KEY,
@@ -128,8 +163,267 @@ async def init_db():
                 added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        
+
         await db.commit()
+
+
+async def get_user_prefix(user_id: int) -> str:
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            "SELECT prefix FROM user_settings WHERE user_id = ?",
+            (user_id,)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row and row[0] else ""
+
+
+async def set_user_prefix(user_id: int, prefix: Optional[str]) -> bool:
+    prefix = (prefix or "").strip()
+    if len(prefix) > 24:
+        prefix = prefix[:24]
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO user_settings (user_id, prefix) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET prefix=excluded.prefix",
+            (user_id, prefix or None)
+        )
+        await db.commit()
+    return True
+
+
+async def get_user_items(user_id: int) -> List[Dict]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT item_key, qty FROM user_items WHERE user_id = ? AND qty > 0 ORDER BY item_key ASC",
+            (user_id,)
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def add_item(user_id: int, item_key: str, qty: int = 1) -> bool:
+    if qty <= 0:
+        return False
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO user_items (user_id, item_key, qty) VALUES (?, ?, ?) ON CONFLICT(user_id, item_key) DO UPDATE SET qty = qty + excluded.qty",
+            (user_id, item_key, qty)
+        )
+        await db.commit()
+    return True
+
+
+async def remove_item(user_id: int, item_key: str, qty: int = 1) -> bool:
+    if qty <= 0:
+        return False
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        cursor = await db.execute(
+            "SELECT qty FROM user_items WHERE user_id = ? AND item_key = ?",
+            (user_id, item_key)
+        )
+        row = await cursor.fetchone()
+        current = row[0] if row else 0
+        if current < qty:
+            await db.rollback()
+            return False
+
+        new_qty = current - qty
+        if new_qty == 0:
+            await db.execute(
+                "DELETE FROM user_items WHERE user_id = ? AND item_key = ?",
+                (user_id, item_key)
+            )
+        else:
+            await db.execute(
+                "UPDATE user_items SET qty = ? WHERE user_id = ? AND item_key = ?",
+                (new_qty, user_id, item_key)
+            )
+        await db.commit()
+        return True
+
+
+async def transfer_stars(from_user_id: int, to_user_id: int, amount: int) -> bool:
+    if amount <= 0:
+        return False
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        cursor = await db.execute(
+            "SELECT COALESCE(stars, 0) FROM users WHERE user_id = ?",
+            (from_user_id,)
+        )
+        row = await cursor.fetchone()
+        current = row[0] if row else 0
+        if current < amount:
+            await db.rollback()
+            return False
+
+        await db.execute(
+            "UPDATE users SET stars = COALESCE(stars, 0) - ? WHERE user_id = ?",
+            (amount, from_user_id)
+        )
+        await db.execute(
+            "UPDATE users SET stars = COALESCE(stars, 0) + ? WHERE user_id = ?",
+            (amount, to_user_id)
+        )
+        await db.commit()
+        return True
+
+
+async def transfer_item(from_user_id: int, to_user_id: int, item_key: str, qty: int) -> bool:
+    if qty <= 0:
+        return False
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        cursor = await db.execute(
+            "SELECT qty FROM user_items WHERE user_id = ? AND item_key = ?",
+            (from_user_id, item_key)
+        )
+        row = await cursor.fetchone()
+        current = row[0] if row else 0
+        if current < qty:
+            await db.rollback()
+            return False
+
+        new_qty = current - qty
+        if new_qty == 0:
+            await db.execute(
+                "DELETE FROM user_items WHERE user_id = ? AND item_key = ?",
+                (from_user_id, item_key)
+            )
+        else:
+            await db.execute(
+                "UPDATE user_items SET qty = ? WHERE user_id = ? AND item_key = ?",
+                (new_qty, from_user_id, item_key)
+            )
+
+        await db.execute(
+            "INSERT INTO user_items (user_id, item_key, qty) VALUES (?, ?, ?) ON CONFLICT(user_id, item_key) DO UPDATE SET qty = qty + excluded.qty",
+            (to_user_id, item_key, qty)
+        )
+        await db.commit()
+        return True
+
+
+async def create_item_auction(seller_id: int, item_key: str, qty: int, starting_price: int, duration_hours: int = 24) -> Optional[int]:
+    if qty <= 0 or starting_price <= 0 or duration_hours <= 0:
+        return None
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        cursor = await db.execute(
+            "SELECT qty FROM user_items WHERE user_id = ? AND item_key = ?",
+            (seller_id, item_key)
+        )
+        row = await cursor.fetchone()
+        current = row[0] if row else 0
+        if current < qty:
+            await db.rollback()
+            return None
+
+        new_qty = current - qty
+        if new_qty == 0:
+            await db.execute(
+                "DELETE FROM user_items WHERE user_id = ? AND item_key = ?",
+                (seller_id, item_key)
+            )
+        else:
+            await db.execute(
+                "UPDATE user_items SET qty = ? WHERE user_id = ? AND item_key = ?",
+                (new_qty, seller_id, item_key)
+            )
+
+        end_time = (datetime.now() + timedelta(hours=duration_hours)).isoformat()
+        cursor = await db.execute(
+            "INSERT INTO item_auctions (seller_id, item_key, qty, starting_price, current_bid, end_time, status) VALUES (?, ?, ?, ?, ?, ?, 'active')",
+            (seller_id, item_key, qty, starting_price, starting_price, end_time)
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_active_item_auctions() -> List[Dict]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM item_auctions WHERE status = 'active' AND end_time > datetime('now') ORDER BY end_time ASC"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def place_item_bid(auction_id: int, user_id: int, bid_amount: int) -> tuple[bool, str]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM item_auctions WHERE id = ? AND status = 'active'",
+            (auction_id,)
+        )
+        auction = await cursor.fetchone()
+        if not auction:
+            return False, "Аукцион не найден или уже завершен"
+
+        auction_dict = dict(auction)
+        end_time = datetime.fromisoformat(auction_dict['end_time'])
+        if datetime.now() >= end_time:
+            await db.execute(
+                "UPDATE item_auctions SET status = 'ended' WHERE id = ?",
+                (auction_id,)
+            )
+            await db.commit()
+            return False, "Аукцион уже завершен"
+
+        current_bid = auction_dict['current_bid']
+        if bid_amount <= current_bid:
+            return False, f"Ставка должна быть больше {current_bid} ⭐"
+
+        user_stars = await get_user_stars(user_id)
+        if user_stars < bid_amount:
+            return False, "Недостаточно звезд"
+
+        await db.execute("BEGIN IMMEDIATE")
+
+        if auction_dict.get('current_bidder_id'):
+            await add_stars(auction_dict['current_bidder_id'], auction_dict['current_bid'])
+
+        await spend_stars(user_id, bid_amount)
+        await db.execute(
+            "UPDATE item_auctions SET current_bid = ?, current_bidder_id = ? WHERE id = ?",
+            (bid_amount, user_id, auction_id)
+        )
+        await db.commit()
+        return True, f"Ставка принята: {bid_amount} ⭐"
+
+
+async def end_item_auction(auction_id: int) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM item_auctions WHERE id = ?",
+            (auction_id,)
+        )
+        auction = await cursor.fetchone()
+        if not auction:
+            return None
+
+        auction_dict = dict(auction)
+        if auction_dict['status'] != 'active':
+            return None
+
+        await db.execute(
+            "UPDATE item_auctions SET status = 'ended' WHERE id = ?",
+            (auction_id,)
+        )
+        await db.commit()
+
+        winner_id = auction_dict.get('current_bidder_id')
+        if winner_id:
+            await add_item(winner_id, auction_dict['item_key'], int(auction_dict.get('qty', 1) or 1))
+        else:
+            await add_item(auction_dict['seller_id'], auction_dict['item_key'], int(auction_dict.get('qty', 1) or 1))
+
+        return auction_dict
 
 async def get_next_internal_id() -> int:
     async with aiosqlite.connect(DB_NAME) as db:
@@ -352,9 +646,10 @@ async def calculate_total_boost(user_id: int) -> float:
     for nft in nfts:
         nft_type = nft['nft_type']
         if nft_type in NFT_GIFTS:
-            total_boost *= NFT_GIFTS[nft_type]["boost"]
-    
-    return total_boost
+            b = float(NFT_GIFTS[nft_type].get("boost", 1.0))
+            total_boost += max(0.0, b - 1.0)
+
+    return min(total_boost, 2.5)
 
 async def collect_farm_income(user_id: int) -> int:
     from config import FARM_TYPES
@@ -426,11 +721,15 @@ async def collect_farm_income_with_crystals(user_id: int) -> tuple[int, int]:
 
     import random
     crystals_gained = 0
+    active_farms = 0
     for farm in farms:
         if not farm.get('is_active', 0):
             continue
-        if random.random() < 0.01:
+        active_farms += 1
+        if random.random() < 0.015:
             crystals_gained += 1
+
+    crystals_gained += active_farms // 40
 
     if crystals_gained > 0:
         await add_crystals(user_id, crystals_gained)

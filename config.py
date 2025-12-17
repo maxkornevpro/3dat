@@ -10,53 +10,53 @@ ADMIN_IDS = [5538590798, 891015442, 5253753886, 1246190987]
 NFT_GIFTS = {
     "snoop_dogg": {
         "name": "🎤 Snoop Dogg",
-        "price": 5000,
-        "boost": 1.5,        "gift_id": "snoop_dogg"
+        "price": 9000,
+        "boost": 1.25,        "gift_id": "snoop_dogg"
     },
     "lunar_snake": {
         "name": "🐍 Lunar Snake",
-        "price": 3500,
-        "boost": 1.3,        "gift_id": "lunar_snake"
+        "price": 6500,
+        "boost": 1.15,        "gift_id": "lunar_snake"
     },
     "crystal_ball": {
         "name": "🔮 Crystal Ball",
-        "price": 6000,
-        "boost": 1.6,        "gift_id": "crystal_ball"
+        "price": 11000,
+        "boost": 1.3,        "gift_id": "crystal_ball"
     },
     "golden_coin": {
         "name": "🪙 Golden Coin",
-        "price": 3000,
-        "boost": 1.25,        "gift_id": "golden_coin"
+        "price": 5500,
+        "boost": 1.12,        "gift_id": "golden_coin"
     },
     "diamond_ring": {
         "name": "💍 Diamond Ring",
-        "price": 10000,
-        "boost": 2.0,        "gift_id": "diamond_ring"
+        "price": 18000,
+        "boost": 1.4,        "gift_id": "diamond_ring"
     },
     "magic_lamp": {
         "name": "🪔 Magic Lamp",
-        "price": 7500,
-        "boost": 1.7,        "gift_id": "magic_lamp"
+        "price": 14000,
+        "boost": 1.32,        "gift_id": "magic_lamp"
     },
     "fire_dragon": {
         "name": "🐉 Fire Dragon",
-        "price": 12000,
-        "boost": 2.2,        "gift_id": "fire_dragon"
+        "price": 22000,
+        "boost": 1.45,        "gift_id": "fire_dragon"
     },
     "cosmic_star": {
         "name": "⭐ Cosmic Star",
-        "price": 8000,
-        "boost": 1.8,        "gift_id": "cosmic_star"
+        "price": 15000,
+        "boost": 1.35,        "gift_id": "cosmic_star"
     },
     "golden_crown": {
         "name": "👑 Golden Crown",
-        "price": 15000,
-        "boost": 2.5,        "gift_id": "golden_crown"
+        "price": 28000,
+        "boost": 1.6,        "gift_id": "golden_crown"
     },
     "mystic_orb": {
         "name": "🔮 Mystic Orb",
-        "price": 9000,
-        "boost": 1.9,        "gift_id": "mystic_orb"
+        "price": 17000,
+        "boost": 1.38,        "gift_id": "mystic_orb"
     }
 }
 

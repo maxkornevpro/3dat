@@ -16,6 +16,51 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS contests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT,
+                description TEXT,
+                reward TEXT,
+                how_to TEXT,
+                created_by INTEGER,
+                status TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_farm_auctions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                seller_id INTEGER,
+                farm_type TEXT,
+                starting_price INTEGER,
+                current_bid INTEGER,
+                current_bidder_id INTEGER,
+                end_time TIMESTAMP,
+                status TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (seller_id) REFERENCES users (user_id),
+                FOREIGN KEY (current_bidder_id) REFERENCES users (user_id)
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_nft_auctions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                seller_id INTEGER,
+                nft_type TEXT,
+                starting_price INTEGER,
+                current_bid INTEGER,
+                current_bidder_id INTEGER,
+                end_time TIMESTAMP,
+                status TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (seller_id) REFERENCES users (user_id),
+                FOREIGN KEY (current_bidder_id) REFERENCES users (user_id)
+            )
+        """)
         
         try:
             await db.execute("ALTER TABLE users ADD COLUMN internal_id INTEGER")
@@ -167,6 +212,34 @@ async def init_db():
         await db.commit()
 
 
+async def get_active_contests() -> List[Dict]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM contests WHERE status = 'active' ORDER BY created_at DESC"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def add_contest(title: str, description: str, reward: str, how_to: str, created_by: int) -> bool:
+    if not (title or description or reward or how_to):
+        return False
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO contests (title, description, reward, how_to, created_by, status) VALUES (?, ?, ?, ?, ?, 'active')",
+            (title, description, reward, how_to, created_by)
+        )
+        await db.commit()
+        return True
+
+
+async def clear_contests() -> None:
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE contests SET status = 'ended' WHERE status = 'active'")
+        await db.commit()
+
+
 async def get_user_prefix(user_id: int) -> str:
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(
@@ -204,6 +277,7 @@ async def get_user_items(user_id: int) -> List[Dict]:
 async def add_item(user_id: int, item_key: str, qty: int = 1) -> bool:
     if qty <= 0:
         return False
+
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
             "INSERT INTO user_items (user_id, item_key, qty) VALUES (?, ?, ?) ON CONFLICT(user_id, item_key) DO UPDATE SET qty = qty + excluded.qty",
@@ -211,6 +285,328 @@ async def add_item(user_id: int, item_key: str, qty: int = 1) -> bool:
         )
         await db.commit()
     return True
+
+
+async def get_farm_dynamic_price(user_id: int, farm_type: str) -> int:
+    from config import FARM_TYPES
+    if farm_type not in FARM_TYPES:
+        return 0
+    base_price = int(FARM_TYPES[farm_type]["price"])
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM farms WHERE user_id = ? AND farm_type = ?",
+            (user_id, farm_type)
+        )
+        row = await cursor.fetchone()
+        owned = int(row[0]) if row else 0
+
+    price = int(round(base_price * (1.5 ** owned)))
+    if price < base_price:
+        price = base_price
+    return price
+
+
+async def buy_farm_dynamic(user_id: int, farm_type: str, price: int) -> bool:
+    from config import FARM_TYPES
+    if farm_type not in FARM_TYPES:
+        return False
+    if price <= 0:
+        return False
+    if await spend_stars(user_id, price):
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute(
+                "INSERT INTO farms (user_id, farm_type, last_activated, is_active) VALUES (?, ?, ?, 0)",
+                (user_id, farm_type, datetime.now().isoformat())
+            )
+            await db.commit()
+        return True
+    return False
+
+
+async def create_user_farm_auction(seller_id: int, farm_type: str, starting_price: int, duration_hours: int = 24) -> tuple[int, str]:
+    from config import FARM_TYPES
+    if farm_type not in FARM_TYPES:
+        return 0, "Неверный тип фермы"
+    if starting_price <= 0:
+        return 0, "Цена должна быть > 0"
+
+    real_price = int(FARM_TYPES[farm_type]["price"])
+    max_start = int(real_price // 1.5)
+    if max_start <= 0:
+        max_start = 1
+    if starting_price > max_start:
+        return 0, f"Максимальная стартовая цена: {max_start} ⭐"
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        # забираем у продавца одну ферму данного типа
+        cursor = await db.execute(
+            "SELECT id FROM farms WHERE user_id = ? AND farm_type = ? ORDER BY id ASC LIMIT 1",
+            (seller_id, farm_type)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return 0, "У вас нет такой фермы"
+        farm_row_id = row[0]
+
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            await db.execute("DELETE FROM farms WHERE id = ? AND user_id = ?", (farm_row_id, seller_id))
+            end_time = datetime.now() + timedelta(hours=duration_hours)
+            cur = await db.execute(
+                "INSERT INTO user_farm_auctions (seller_id, farm_type, starting_price, current_bid, end_time, status) VALUES (?, ?, ?, ?, ?, 'active')",
+                (seller_id, farm_type, starting_price, starting_price, end_time.isoformat())
+            )
+            await db.commit()
+            return cur.lastrowid, ""
+        except Exception:
+            await db.rollback()
+            return 0, "Ошибка при создании лота"
+
+
+async def create_user_nft_auction(seller_id: int, nft_type: str, starting_price: int, duration_hours: int = 24) -> tuple[int, str]:
+    from config import NFT_GIFTS
+    if nft_type not in NFT_GIFTS:
+        return 0, "Неверный NFT"
+    if starting_price <= 0:
+        return 0, "Цена должна быть > 0"
+
+    real_price = int(NFT_GIFTS[nft_type]["price"])
+    max_start = int(real_price // 1.5)
+    if max_start <= 0:
+        max_start = 1
+    if starting_price > max_start:
+        return 0, f"Максимальная стартовая цена: {max_start} ⭐"
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            "SELECT id FROM nfts WHERE user_id = ? AND nft_type = ? ORDER BY id ASC LIMIT 1",
+            (seller_id, nft_type)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return 0, "У вас нет такого NFT"
+        nft_row_id = row[0]
+
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            await db.execute("DELETE FROM nfts WHERE id = ? AND user_id = ?", (nft_row_id, seller_id))
+            end_time = datetime.now() + timedelta(hours=duration_hours)
+            cur = await db.execute(
+                "INSERT INTO user_nft_auctions (seller_id, nft_type, starting_price, current_bid, end_time, status) VALUES (?, ?, ?, ?, ?, 'active')",
+                (seller_id, nft_type, starting_price, starting_price, end_time.isoformat())
+            )
+            await db.commit()
+            return cur.lastrowid, ""
+        except Exception:
+            await db.rollback()
+            return 0, "Ошибка при создании лота"
+
+
+async def get_active_user_auctions() -> Dict[str, List[Dict]]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cur1 = await db.execute(
+            "SELECT * FROM user_farm_auctions WHERE status = 'active' AND end_time > datetime('now') ORDER BY end_time ASC"
+        )
+        farms = [dict(r) for r in await cur1.fetchall()]
+        cur2 = await db.execute(
+            "SELECT * FROM user_nft_auctions WHERE status = 'active' AND end_time > datetime('now') ORDER BY end_time ASC"
+        )
+        nfts = [dict(r) for r in await cur2.fetchall()]
+        return {"farms": farms, "nfts": nfts}
+
+
+async def place_user_farm_bid(auction_id: int, user_id: int, bid_amount: int) -> tuple[bool, str]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM user_farm_auctions WHERE id = ? AND status = 'active'",
+            (auction_id,)
+        )
+        auction = await cursor.fetchone()
+        if not auction:
+            return False, "Аукцион не найден или уже завершен"
+
+        a = dict(auction)
+        try:
+            end_time = datetime.fromisoformat(a['end_time'])
+        except Exception:
+            end_time = datetime.now()
+        if datetime.now() >= end_time:
+            await db.execute("UPDATE user_farm_auctions SET status = 'ended' WHERE id = ?", (auction_id,))
+            await db.commit()
+            return False, "Аукцион уже завершен"
+
+        current_bid = int(a.get('current_bid') or 0)
+        if bid_amount <= current_bid:
+            return False, f"Ставка должна быть больше {current_bid} ⭐"
+
+        if int(a.get('seller_id')) == int(user_id):
+            return False, "Нельзя ставить на свой лот"
+
+        user_stars = await get_user_stars(user_id)
+        if user_stars < bid_amount:
+            return False, "Недостаточно звезд"
+
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            prev_bidder = a.get('current_bidder_id')
+            prev_bid = int(a.get('current_bid') or 0)
+            if prev_bidder:
+                await add_stars(int(prev_bidder), prev_bid)
+
+            ok = await spend_stars(user_id, bid_amount)
+            if not ok:
+                await db.rollback()
+                return False, "Недостаточно звезд"
+
+            await db.execute(
+                "UPDATE user_farm_auctions SET current_bid = ?, current_bidder_id = ? WHERE id = ?",
+                (bid_amount, user_id, auction_id)
+            )
+            await db.commit()
+            return True, f"Ставка принята: {bid_amount} ⭐"
+        except Exception:
+            await db.rollback()
+            return False, "Ошибка при ставке"
+
+
+async def end_user_farm_auction(auction_id: int) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM user_farm_auctions WHERE id = ?",
+            (auction_id,)
+        )
+        auction = await cursor.fetchone()
+        if not auction:
+            return None
+        a = dict(auction)
+        if a.get('status') != 'active':
+            return None
+
+        await db.execute("UPDATE user_farm_auctions SET status = 'ended' WHERE id = ?", (auction_id,))
+        await db.commit()
+
+        winner_id = a.get('current_bidder_id')
+        seller_id = int(a.get('seller_id'))
+        farm_type = a.get('farm_type')
+        qty = 1
+
+        if winner_id:
+            await add_stars(seller_id, int(a.get('current_bid') or 0))
+            # передать ферму победителю
+            async with aiosqlite.connect(DB_NAME) as db2:
+                await db2.execute(
+                    "INSERT INTO farms (user_id, farm_type, last_activated, is_active) VALUES (?, ?, ?, 0)",
+                    (int(winner_id), farm_type, datetime.now().isoformat())
+                )
+                await db2.commit()
+        else:
+            # ставок нет — вернуть ферму продавцу
+            async with aiosqlite.connect(DB_NAME) as db2:
+                await db2.execute(
+                    "INSERT INTO farms (user_id, farm_type, last_activated, is_active) VALUES (?, ?, ?, 0)",
+                    (seller_id, farm_type, datetime.now().isoformat())
+                )
+                await db2.commit()
+
+        return a
+
+
+async def place_user_nft_bid(auction_id: int, user_id: int, bid_amount: int) -> tuple[bool, str]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM user_nft_auctions WHERE id = ? AND status = 'active'",
+            (auction_id,)
+        )
+        auction = await cursor.fetchone()
+        if not auction:
+            return False, "Аукцион не найден или уже завершен"
+
+        a = dict(auction)
+        try:
+            end_time = datetime.fromisoformat(a['end_time'])
+        except Exception:
+            end_time = datetime.now()
+        if datetime.now() >= end_time:
+            await db.execute("UPDATE user_nft_auctions SET status = 'ended' WHERE id = ?", (auction_id,))
+            await db.commit()
+            return False, "Аукцион уже завершен"
+
+        current_bid = int(a.get('current_bid') or 0)
+        if bid_amount <= current_bid:
+            return False, f"Ставка должна быть больше {current_bid} ⭐"
+
+        if int(a.get('seller_id')) == int(user_id):
+            return False, "Нельзя ставить на свой лот"
+
+        user_stars = await get_user_stars(user_id)
+        if user_stars < bid_amount:
+            return False, "Недостаточно звезд"
+
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            prev_bidder = a.get('current_bidder_id')
+            prev_bid = int(a.get('current_bid') or 0)
+            if prev_bidder:
+                await add_stars(int(prev_bidder), prev_bid)
+
+            ok = await spend_stars(user_id, bid_amount)
+            if not ok:
+                await db.rollback()
+                return False, "Недостаточно звезд"
+
+            await db.execute(
+                "UPDATE user_nft_auctions SET current_bid = ?, current_bidder_id = ? WHERE id = ?",
+                (bid_amount, user_id, auction_id)
+            )
+            await db.commit()
+            return True, f"Ставка принята: {bid_amount} ⭐"
+        except Exception:
+            await db.rollback()
+            return False, "Ошибка при ставке"
+
+
+async def end_user_nft_auction(auction_id: int) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM user_nft_auctions WHERE id = ?",
+            (auction_id,)
+        )
+        auction = await cursor.fetchone()
+        if not auction:
+            return None
+        a = dict(auction)
+        if a.get('status') != 'active':
+            return None
+
+        await db.execute("UPDATE user_nft_auctions SET status = 'ended' WHERE id = ?", (auction_id,))
+        await db.commit()
+
+        winner_id = a.get('current_bidder_id')
+        seller_id = int(a.get('seller_id'))
+        nft_type = a.get('nft_type')
+
+        if winner_id:
+            await add_stars(seller_id, int(a.get('current_bid') or 0))
+            async with aiosqlite.connect(DB_NAME) as db2:
+                await db2.execute(
+                    "INSERT INTO nfts (user_id, nft_type) VALUES (?, ?)",
+                    (int(winner_id), nft_type)
+                )
+                await db2.commit()
+        else:
+            async with aiosqlite.connect(DB_NAME) as db2:
+                await db2.execute(
+                    "INSERT INTO nfts (user_id, nft_type) VALUES (?, ?)",
+                    (seller_id, nft_type)
+                )
+                await db2.commit()
+
+        return a
 
 
 async def remove_item(user_id: int, item_key: str, qty: int = 1) -> bool:

@@ -23,6 +23,13 @@ from database import (
 )
 
 from database import (
+    get_active_contests, add_contest, clear_contests,
+    get_farm_dynamic_price, buy_farm_dynamic,
+    create_user_farm_auction, create_user_nft_auction, get_active_user_auctions,
+    place_user_farm_bid, place_user_nft_bid, end_user_farm_auction, end_user_nft_auction
+)
+
+from database import (
     get_user_crystals, transfer_crystals, collect_farm_income_with_crystals,
     spend_crystals, add_crystals,
     create_farm_trade, get_farm_trade, set_farm_trade_status, transfer_farm_ownership
@@ -203,19 +210,24 @@ async def cmd_help(message: Message):
         "🔹 /crystal_shop - Обмен кристаллов на звезды\n"
         "🔹 /send_crystals <target> <amount> - Отправить кристаллы\n"
         "    target: internal_id | telegram_id | @username\n"
-        "🔹 /sell_farm <farm_id> <target> <price> - Продать ферму\n"
+        "🔹 /sell_farm <farm_id> <target> <price> - Продать ферму (трейд)\n"
         "    target: internal_id | telegram_id | @username\n"
         "🔹 /referral - Получить реферальную ссылку\n"
         "🔹 /auction - Показать активные аукционы\n"
         "🔹 /top - ТОП-50 игроков по звездам\n\n"
-        "� /inventory - Инвентарь предметов\n"
+        "🔹 /inventory - Инвентарь предметов\n"
         "🔹 /set_prefix <item_key|off> - Поставить/снять префикс\n"
         "🔹 /send_item <target> <item_key> <qty> - Отправить предмет\n"
         "🔹 /send_stars <target> <amount> - Отправить звезды\n"
-        "🔹 /contests - Конкурсы и активности\n"
-        "🔹 /sell_item <item_key> <qty> <start_price> - Выставить предмет на аукцион\n"
-        "🔹 /bid_item <auction_id> <amount> - Ставка на предмет\n\n"
-        "� Важно:\n"
+        "🔹 /contests - Конкурсы\n"
+        "\nАукционы:\n"
+        "🔹 /sell_item <item_key> <qty> <start_price> - Выставить предмет\n"
+        "🔹 /bid_item <auction_id> <amount> - Ставка на предмет\n"
+        "🔹 /aucsell <farm|nft> <key> <start_price> - Выставить ферму/NFT\n"
+        "    ограничение: стартовая цена <= реальная_цена/1.5\n"
+        "🔹 /bid_ufarm <id> <amount> - Ставка на ферму игрока\n"
+        "🔹 /bid_unft <id> <amount> - Ставка на NFT игрока\n\n"
+        "💡 Важно:\n"
         "• Фермы нужно активировать каждые 6 часов\n"
         "• Только активированные фермы приносят доход\n"
         "• Используйте NFT для увеличения дохода\n"
@@ -238,7 +250,14 @@ async def cmd_ahelp(message: Message):
         "🔸 /add_stars <target> <amount> - Выдать/снять звезды\n"
         "🔸 /add_crystals <target> <amount> - Выдать/снять кристаллы\n"
         "    target: internal_id | telegram_id | @username\n"
+        "\nКонкурсы:\n"
+        "🔸 /contest_add title|description|reward|how_to - Добавить конкурс\n"
+        "🔸 /contest_list - Список активных конкурсов\n"
+        "🔸 /contest_clear - Завершить/очистить активные конкурсы\n"
+        "\nЗавершение аукционов:\n"
         "🔸 /end_item_auction <id> - Завершить аукцион предмета\n"
+        "🔸 /end_ufarm <id> - Завершить аукцион фермы игрока (/aucsell)\n"
+        "🔸 /end_unft <id> - Завершить аукцион NFT игрока (/aucsell)\n"
     )
 
     if message.chat.type == "private":
@@ -485,12 +504,16 @@ async def cmd_send_stars(message: Message):
 
 @dp.message(Command("contests"))
 async def cmd_contests(message: Message):
-    text = "🏁 Конкурсы\n\n"
-    for idx, c in enumerate(CONTESTS, start=1):
-        text += f"{idx}. {c.get('title','')}\n"
-        text += f"   {c.get('description','')}\n"
-        text += f"   🎁 Награда: {c.get('reward','')}\n"
-        text += f"   ✅ Как участвовать: {c.get('how_to','')}\n\n"
+    contests = await get_active_contests()
+    if not contests:
+        text = "🏁 Конкурсы\n\nСейчас нет активных конкурсов."
+    else:
+        text = "🏁 Конкурсы\n\n"
+        for idx, c in enumerate(contests, start=1):
+            text += f"{idx}. {c.get('title','')}\n"
+            text += f"   {c.get('description','')}\n"
+            text += f"   🎁 Награда: {c.get('reward','')}\n"
+            text += f"   ✅ Как участвовать: {c.get('how_to','')}\n\n"
 
     if message.chat.type == "private":
         await message.answer(text)
@@ -500,6 +523,85 @@ async def cmd_contests(message: Message):
 @dp.message(F.text == "🏁 Конкурсы")
 async def contests_button(message: Message):
     await cmd_contests(message)
+
+@dp.message(Command("contest_add"))
+async def cmd_contest_add(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    raw = message.text[len("/contest_add"):].strip()
+    if not raw or "|" not in raw:
+        await message.reply("Использование: /contest_add title|description|reward|how_to")
+        return
+
+    parts = [p.strip() for p in raw.split("|")]
+    while len(parts) < 4:
+        parts.append("")
+
+    ok = await add_contest(
+        title=parts[0],
+        description=parts[1],
+        reward=parts[2],
+        how_to=parts[3],
+        created_by=message.from_user.id
+    )
+    if ok:
+        await message.reply("✅ Конкурс добавлен")
+    else:
+        await message.reply("❌ Не удалось добавить конкурс")
+
+@dp.message(Command("contest_list"))
+async def cmd_contest_list(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    contests = await get_active_contests()
+    if not contests:
+        await message.reply("Активных конкурсов нет")
+        return
+    text = "Активные конкурсы:\n\n"
+    for c in contests:
+        text += f"- #{c.get('id')}: {c.get('title','')}\n"
+    await message.reply(text)
+
+@dp.message(Command("contest_clear"))
+async def cmd_contest_clear(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    await clear_contests()
+    await message.reply("✅ Все конкурсы очищены")
+
+@dp.message(Command("aucsell"))
+async def cmd_aucsell(message: Message):
+    user_id = message.from_user.id
+    args = message.text.split()
+    if len(args) < 4:
+        await message.reply("Использование: /aucsell <farm|nft> <key> <start_price>")
+        return
+    kind = args[1].lower()
+    key = args[2]
+    try:
+        start_price = int(args[3])
+    except ValueError:
+        await message.reply("❌ start_price должен быть числом")
+        return
+
+    if kind == "farm":
+        lot_id, err = await create_user_farm_auction(user_id, key, start_price, duration_hours=24)
+        if not lot_id:
+            await message.reply(f"❌ {err}")
+            return
+        await message.reply(f"✅ Ферма выставлена на аукцион: ID {lot_id}")
+        return
+
+    if kind == "nft":
+        lot_id, err = await create_user_nft_auction(user_id, key, start_price, duration_hours=24)
+        if not lot_id:
+            await message.reply(f"❌ {err}")
+            return
+        await message.reply(f"✅ NFT выставлен на аукцион: ID {lot_id}")
+        return
+
+    await message.reply("❌ kind должен быть farm или nft")
 
 @dp.message(Command("profile"))
 async def cmd_profile(message: Message):
@@ -798,13 +900,27 @@ async def show_farm_shop(message: Message):
 async def show_farm_shop_handler(message: Message):
     user_id = message.from_user.id
     stars = await get_user_stars(user_id)
-    
+
+    keyboard = await build_farm_shop_keyboard(user_id)
     shop_text = f"🛒 Магазин ферм\n\n⭐ Ваши звезды: {stars}\n\nВыберите ферму:"
-    
+
     if message.chat.type == "private":
-        await message.answer(shop_text, reply_markup=get_farm_shop_keyboard())
+        await message.answer(shop_text, reply_markup=keyboard)
     else:
         await message.reply(shop_text + "\n💡 В группах используйте команды для покупки")
+
+async def build_farm_shop_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+    for farm_id, farm in FARM_TYPES.items():
+        price = await get_farm_dynamic_price(user_id, farm_id)
+        keyboard.inline_keyboard.append([
+            InlineKeyboardButton(
+                text=f"{farm['name']} - {price}⭐ ({farm['income_per_hour']}⭐/час)",
+                callback_data=f"buy_farm_{farm_id}"
+            )
+        ])
+    keyboard.inline_keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")])
+    return keyboard
 
 @dp.message(Command("nft"))
 async def cmd_nft(message: Message):
@@ -1263,7 +1379,10 @@ async def cmd_auction(message: Message):
 
     auctions = await get_active_auctions()
     item_auctions = await get_active_item_auctions()
-    if not auctions and not item_auctions:
+    user_auctions = await get_active_user_auctions()
+    user_farm_auctions = (user_auctions or {}).get('farms', [])
+    user_nft_auctions = (user_auctions or {}).get('nfts', [])
+    if not auctions and not item_auctions and not user_farm_auctions and not user_nft_auctions:
         if message.chat.type == "private":
             await message.answer("🔨 Аукцион\n\nСейчас нет активных аукционов.")
         else:
@@ -1323,9 +1442,64 @@ async def cmd_auction(message: Message):
                 "\n"
             )
 
+    if user_farm_auctions:
+        text += "\n🌾 Фермы игроков (/aucsell):\n\n"
+        for a in user_farm_auctions:
+            end_time_raw = a.get('end_time')
+            time_left_text = ""
+            if end_time_raw:
+                try:
+                    end_time = datetime.fromisoformat(end_time_raw)
+                    delta = end_time - now
+                    minutes_left = max(0, int(delta.total_seconds() // 60))
+                    hours = minutes_left // 60
+                    minutes = minutes_left % 60
+                    time_left_text = f"⏳ Осталось: {hours}ч {minutes}м\n"
+                except Exception:
+                    time_left_text = ""
+
+            farm_type = a.get('farm_type')
+            farm_name = FARM_TYPES.get(farm_type, {}).get('name', str(farm_type))
+            text += (
+                f"🆔 ID: {a.get('id')}\n"
+                f"🌾 Лот: {farm_name}\n"
+                f"💰 Текущая ставка: {a.get('current_bid')} ⭐\n"
+                f"{time_left_text}"
+                "\n"
+            )
+
+    if user_nft_auctions:
+        text += "\n🎁 NFT игроков (/aucsell):\n\n"
+        for a in user_nft_auctions:
+            end_time_raw = a.get('end_time')
+            time_left_text = ""
+            if end_time_raw:
+                try:
+                    end_time = datetime.fromisoformat(end_time_raw)
+                    delta = end_time - now
+                    minutes_left = max(0, int(delta.total_seconds() // 60))
+                    hours = minutes_left // 60
+                    minutes = minutes_left % 60
+                    time_left_text = f"⏳ Осталось: {hours}ч {minutes}м\n"
+                except Exception:
+                    time_left_text = ""
+
+            nft_type = a.get('nft_type')
+            nft_name = NFT_GIFTS.get(nft_type, {}).get('name', str(nft_type))
+            text += (
+                f"🆔 ID: {a.get('id')}\n"
+                f"🎁 Лот: {nft_name}\n"
+                f"💰 Текущая ставка: {a.get('current_bid')} ⭐\n"
+                f"{time_left_text}"
+                "\n"
+            )
+
     text += "Чтобы сделать ставку на ферму: /bid <id> <сумма>\n"
     text += "Чтобы сделать ставку на предмет: /bid_item <id> <сумма>\n"
+    text += "Ставка на ферму игрока: /bid_ufarm <id> <сумма>\n"
+    text += "Ставка на NFT игрока: /bid_unft <id> <сумма>\n"
     text += "Чтобы выставить предмет: /sell_item <item_key> <qty> <start_price>"
+    text += "\nВыставить ферму/NFT: /aucsell <farm|nft> <key> <start_price>"
 
     if message.chat.type == "private":
         await message.answer(text)
@@ -1379,6 +1553,82 @@ async def cmd_bid_item(message: Message):
         await message.reply(f"✅ {msg}")
     else:
         await message.reply(f"❌ {msg}")
+
+@dp.message(Command("bid_ufarm"))
+async def cmd_bid_ufarm(message: Message):
+    user_id = message.from_user.id
+    args = message.text.split()
+    if len(args) < 3:
+        await message.reply("Использование: /bid_ufarm <auction_id> <amount>")
+        return
+    try:
+        auction_id = int(args[1])
+        amount = int(args[2])
+    except ValueError:
+        await message.reply("❌ auction_id и amount должны быть числами")
+        return
+    ok, msg = await place_user_farm_bid(auction_id, user_id, amount)
+    if ok:
+        await message.reply(f"✅ {msg}")
+    else:
+        await message.reply(f"❌ {msg}")
+
+@dp.message(Command("bid_unft"))
+async def cmd_bid_unft(message: Message):
+    user_id = message.from_user.id
+    args = message.text.split()
+    if len(args) < 3:
+        await message.reply("Использование: /bid_unft <auction_id> <amount>")
+        return
+    try:
+        auction_id = int(args[1])
+        amount = int(args[2])
+    except ValueError:
+        await message.reply("❌ auction_id и amount должны быть числами")
+        return
+    ok, msg = await place_user_nft_bid(auction_id, user_id, amount)
+    if ok:
+        await message.reply(f"✅ {msg}")
+    else:
+        await message.reply(f"❌ {msg}")
+
+@dp.message(Command("end_ufarm"))
+async def cmd_end_ufarm(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        await message.reply("Использование: /end_ufarm <id>")
+        return
+    try:
+        auction_id = int(args[1])
+    except ValueError:
+        await message.reply("❌ id должен быть числом")
+        return
+    result = await end_user_farm_auction(auction_id)
+    if not result:
+        await message.reply("❌ Лот не найден или уже завершён")
+        return
+    await message.reply(f"✅ Лот фермы завершён: {auction_id}")
+
+@dp.message(Command("end_unft"))
+async def cmd_end_unft(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        await message.reply("Использование: /end_unft <id>")
+        return
+    try:
+        auction_id = int(args[1])
+    except ValueError:
+        await message.reply("❌ id должен быть числом")
+        return
+    result = await end_user_nft_auction(auction_id)
+    if not result:
+        await message.reply("❌ Лот не найден или уже завершён")
+        return
+    await message.reply(f"✅ Лот NFT завершён: {auction_id}")
 
 async def collect_income_handler(message: Message):
     user_id = message.from_user.id
@@ -1469,8 +1719,9 @@ async def handle_buy_farm(callback: CallbackQuery):
     
     user_id = callback.from_user.id
     farm_data = FARM_TYPES[farm_id]
-    
-    success = await buy_farm(user_id, farm_id)
+
+    price = await get_farm_dynamic_price(user_id, farm_id)
+    success = await buy_farm_dynamic(user_id, farm_id, price)
     
     if success:
         stars = await get_user_stars(user_id)
@@ -1478,23 +1729,16 @@ async def handle_buy_farm(callback: CallbackQuery):
             f"✅ Вы купили {farm_data['name']}!",
             show_alert=True
         )
-        
-        shop_text = f"🛒 Магазин ферм\n\n⭐ Ваши звезды: {stars}\n\n"
-        shop_text += f"✅ Вы купили {farm_data['name']}!\n\n"
-        
-        for farm_id_item, farm_data_item in FARM_TYPES.items():
-            income_per_min = round(farm_data_item['income_per_hour'] / 60, 2)
-            shop_text += (
-                f"{farm_data_item['name']}\n"
-                f"💰 Цена: {farm_data_item['price']} ⭐\n"
-                f"📈 Доход: {income_per_min} ⭐/мин | {farm_data_item['income_per_hour']} ⭐/час\n\n"
-            )
-        
-        await callback.message.edit_text(shop_text, reply_markup=get_farm_shop_keyboard())
+
+        keyboard = await build_farm_shop_keyboard(user_id)
+        await callback.message.edit_text(
+            f"✅ Вы купили {farm_data['name']}!\n\n⭐ Осталось звезд: {stars}",
+            reply_markup=keyboard
+        )
     else:
         stars = await get_user_stars(user_id)
         await callback.answer(
-            f"❌ Недостаточно звезд! Нужно {farm_data['price']}, у вас {stars}",
+            f"❌ Недостаточно звезд! Нужно {price}, у вас {stars}",
             show_alert=True
         )
 
@@ -1583,7 +1827,11 @@ async def handle_buy_nft(callback: CallbackQuery):
         success = await buy_nft(user_id, nft_id)
         if success:
             await callback.answer(f"🎉 Поздравляем! Вы купили {nft['name']}!", show_alert=True)
-            await show_nft_shop_handler(callback.message)
+            stars = await get_user_stars(user_id)
+            await callback.message.edit_text(
+                f"✅ Куплено: {nft['name']}\n\n⭐ Осталось звезд: {stars}",
+                reply_markup=get_nft_shop_keyboard()
+            )
         else:
             await callback.answer("❌ Ошибка при покупке NFT. Попробуйте позже.", show_alert=True)
     except Exception as e:

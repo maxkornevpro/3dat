@@ -1,7 +1,8 @@
 import aiosqlite
 import asyncio
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+import random
+from typing import List, Dict, Optional, Tuple
 
 DB_NAME = "game_bot.db"
 
@@ -12,7 +13,47 @@ async def init_db():
                 user_id INTEGER PRIMARY KEY,
                 stars INTEGER DEFAULT 200,
                 crystals INTEGER DEFAULT 0,
+                xp INTEGER DEFAULT 0,
+                level INTEGER DEFAULT 1,
                 last_collect TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS case_drops (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                case_type TEXT,
+                reward_text TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (user_id)
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS global_quests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                quest_type TEXT,
+                title TEXT,
+                goal_value INTEGER,
+                progress_value INTEGER DEFAULT 0,
+                start_time TIMESTAMP,
+                end_time TIMESTAMP,
+                status TEXT DEFAULT 'active',
+                reward_buff_multiplier REAL DEFAULT 1.0,
+                reward_buff_seconds INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS global_buffs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                buff_type TEXT,
+                multiplier REAL DEFAULT 1.0,
+                start_time TIMESTAMP,
+                end_time TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -73,6 +114,18 @@ async def init_db():
             await db.commit()
         except:
             pass
+
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN xp INTEGER DEFAULT 0")
+            await db.commit()
+        except:
+            pass
+
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN level INTEGER DEFAULT 1")
+            await db.commit()
+        except:
+            pass
         
         try:
             await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_internal_id ON users(internal_id)")
@@ -100,9 +153,23 @@ async def init_db():
                 purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_activated TIMESTAMP,
                 is_active BOOLEAN DEFAULT 0,
+                speed_level INTEGER DEFAULT 1,
+                cap_level INTEGER DEFAULT 1,
                 FOREIGN KEY (user_id) REFERENCES users (user_id)
             )
         """)
+
+        try:
+            await db.execute("ALTER TABLE farms ADD COLUMN speed_level INTEGER DEFAULT 1")
+            await db.commit()
+        except:
+            pass
+
+        try:
+            await db.execute("ALTER TABLE farms ADD COLUMN cap_level INTEGER DEFAULT 1")
+            await db.commit()
+        except:
+            pass
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS farm_trades (
@@ -126,6 +193,50 @@ async def init_db():
                 nft_type TEXT,
                 purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users (user_id)
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_stats (
+                user_id INTEGER PRIMARY KEY,
+                stars_collected INTEGER DEFAULT 0,
+                farms_bought INTEGER DEFAULT 0,
+                cases_opened INTEGER DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users (user_id)
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_achievements (
+                user_id INTEGER,
+                achievement_id TEXT,
+                claimed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, achievement_id),
+                FOREIGN KEY (user_id) REFERENCES users (user_id)
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS season_snapshots (
+                user_id INTEGER,
+                season_key TEXT,
+                start_stars INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, season_key),
+                FOREIGN KEY (user_id) REFERENCES users (user_id)
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS season_archive (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                season_key TEXT,
+                rank INTEGER,
+                user_id INTEGER,
+                internal_id INTEGER,
+                season_score INTEGER,
+                reward_stars INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
@@ -209,7 +320,312 @@ async def init_db():
             )
         """)
 
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS saturday_offers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                offer_date TEXT,
+                farm_key TEXT,
+                name TEXT,
+                income_per_hour INTEGER,
+                price_stars INTEGER DEFAULT 0,
+                price_crystals INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Farm upgrades table for income boosts
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS farm_upgrades (
+                farm_id INTEGER PRIMARY KEY,
+                income_boost REAL DEFAULT 1.0,
+                upgrade_level INTEGER DEFAULT 0,
+                last_upgraded TIMESTAMP,
+                FOREIGN KEY (farm_id) REFERENCES farms (id)
+            )
+        """)
+        
+        # NFT Listings table for the NFT marketplace
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS nft_listings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                seller_id INTEGER NOT NULL,
+                nft_type TEXT NOT NULL,
+                price INTEGER NOT NULL,
+                fee_pct REAL NOT NULL,
+                status TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                sold_at TIMESTAMP NULL,
+                buyer_id INTEGER NULL,
+                FOREIGN KEY (seller_id) REFERENCES users (user_id),
+                FOREIGN KEY (buyer_id) REFERENCES users (user_id)
+            )
+        """)
+
         await db.commit()
+
+
+async def add_case_drop(user_id: int, case_type: str, reward_text: str) -> None:
+    case_type = (case_type or "").strip()[:32]
+    reward_text = (reward_text or "").strip()[:256]
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO case_drops (user_id, case_type, reward_text) VALUES (?, ?, ?)",
+            (user_id, case_type, reward_text)
+        )
+        await db.commit()
+
+
+async def get_case_drops(user_id: int, limit: int = 20) -> List[Dict]:
+    limit = int(limit or 20)
+    if limit <= 0:
+        limit = 20
+    if limit > 50:
+        limit = 50
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT case_type, reward_text, created_at FROM case_drops WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+            (user_id, limit)
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_active_global_buff() -> Optional[Dict]:
+    now = datetime.now().isoformat()
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM global_buffs WHERE end_time > ? ORDER BY id DESC LIMIT 1",
+            (now,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def activate_global_buff(multiplier: float, seconds: int, buff_type: str = 'income') -> None:
+    multiplier = float(multiplier or 1.0)
+    seconds = int(seconds or 0)
+    if seconds <= 0:
+        return
+    start = datetime.now()
+    end = start + timedelta(seconds=seconds)
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO global_buffs (buff_type, multiplier, start_time, end_time) VALUES (?, ?, ?, ?)",
+            (buff_type, multiplier, start.isoformat(), end.isoformat())
+        )
+        await db.commit()
+
+
+async def get_or_create_global_quest() -> Dict:
+    """Creates a default global quest if none is active.
+
+    Default quest: collect stars server-wide within 24h.
+    Reward: income multiplier buff for 3h.
+    """
+    now = datetime.now()
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("BEGIN IMMEDIATE")
+
+        cursor = await db.execute(
+            "SELECT * FROM global_quests WHERE status = 'active' ORDER BY id DESC LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        if row:
+            q = dict(row)
+            end_time = q.get('end_time')
+            if end_time:
+                try:
+                    end_dt = datetime.fromisoformat(end_time)
+                    if end_dt <= now:
+                        await db.execute(
+                            "UPDATE global_quests SET status = 'failed' WHERE id = ?",
+                            (int(q['id']),)
+                        )
+                        row = None
+                except Exception:
+                    pass
+
+        if not row:
+            start = now
+            end = now + timedelta(hours=24)
+            await db.execute(
+                """INSERT INTO global_quests (
+                    quest_type, title, goal_value, progress_value, start_time, end_time,
+                    status, reward_buff_multiplier, reward_buff_seconds
+                ) VALUES (?, ?, ?, 0, ?, ?, 'active', ?, ?)""",
+                (
+                    'collect_stars',
+                    'Глобалка: собрать ⭐ всем сервером',
+                    1_000_000,
+                    start.isoformat(),
+                    end.isoformat(),
+                    1.25,
+                    3 * 60 * 60,
+                )
+            )
+            cursor = await db.execute(
+                "SELECT * FROM global_quests WHERE status = 'active' ORDER BY id DESC LIMIT 1"
+            )
+            row = await cursor.fetchone()
+
+        await db.commit()
+        return dict(row)
+
+
+async def add_global_quest_progress(amount: int) -> Dict:
+    amount = int(amount or 0)
+    if amount <= 0:
+        return await get_or_create_global_quest()
+
+    now = datetime.now()
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("BEGIN IMMEDIATE")
+
+        cursor = await db.execute(
+            "SELECT * FROM global_quests WHERE status = 'active' ORDER BY id DESC LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        if not row:
+            await db.commit()
+            return await get_or_create_global_quest()
+
+        q = dict(row)
+        end_time = q.get('end_time')
+        if end_time:
+            try:
+                if datetime.fromisoformat(end_time) <= now:
+                    await db.execute(
+                        "UPDATE global_quests SET status = 'failed' WHERE id = ?",
+                        (int(q['id']),)
+                    )
+                    await db.commit()
+                    return await get_or_create_global_quest()
+            except Exception:
+                pass
+
+        new_progress = int(q.get('progress_value', 0) or 0) + amount
+        goal = int(q.get('goal_value', 0) or 0)
+
+        if goal > 0 and new_progress >= goal:
+            await db.execute(
+                "UPDATE global_quests SET progress_value = ?, status = 'completed' WHERE id = ?",
+                (new_progress, int(q['id']))
+            )
+            mult = float(q.get('reward_buff_multiplier', 1.0) or 1.0)
+            secs = int(q.get('reward_buff_seconds', 0) or 0)
+            await db.commit()
+            await activate_global_buff(mult, secs, buff_type='income')
+            # start a new quest next time user opens /quests or contributes
+            q['progress_value'] = new_progress
+            q['status'] = 'completed'
+            return q
+
+        await db.execute(
+            "UPDATE global_quests SET progress_value = ? WHERE id = ?",
+            (new_progress, int(q['id']))
+        )
+        await db.commit()
+        q['progress_value'] = new_progress
+        return q
+
+
+def farm_speed_multiplier(speed_level: int) -> float:
+    speed_level = int(speed_level or 1)
+    if speed_level < 1:
+        speed_level = 1
+    if speed_level > 10:
+        speed_level = 10
+    return 1.0 + (speed_level - 1) * 0.05
+
+
+def farm_cap_hours(cap_level: int) -> float:
+    cap_level = int(cap_level or 1)
+    if cap_level < 1:
+        cap_level = 1
+    if cap_level > 10:
+        cap_level = 10
+    # база: 6 часов, дальше растёт
+    return 6.0 * (1.35 ** (cap_level - 1))
+
+
+def farm_upgrade_cost(base_price: int, current_level: int) -> int:
+    base_price = int(base_price or 0)
+    current_level = int(current_level or 1)
+    if current_level < 1:
+        current_level = 1
+    if current_level > 10:
+        current_level = 10
+    base_cost = max(50, base_price // 2)
+    return int(round(base_cost * (1.35 ** (current_level - 1))))
+
+
+async def upgrade_farm(user_id: int, farm_id: int, kind: str) -> Tuple[bool, str]:
+    from config import FARM_TYPES
+    kind = (kind or "").strip().lower()
+    if kind not in ("speed", "cap"):
+        return False, "Неверный тип апгрейда"
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await db.execute(
+                "SELECT id, user_id, farm_type, speed_level, cap_level FROM farms WHERE id = ?",
+                (int(farm_id),)
+            )
+            row = await cursor.fetchone()
+            if not row:
+                await db.rollback()
+                return False, "Ферма не найдена"
+            farm = dict(row)
+            if int(farm.get('user_id')) != int(user_id):
+                await db.rollback()
+                return False, "Это не ваша ферма"
+
+            farm_type = str(farm.get('farm_type') or "")
+            if farm_type.startswith("case_"):
+                await db.rollback()
+                return False, "Case-фермы нельзя улучшать"
+
+            if farm_type not in FARM_TYPES:
+                await db.rollback()
+                return False, "Нельзя улучшить эту ферму"
+
+            base_price = int(FARM_TYPES[farm_type].get('price', 0) or 0)
+            if kind == "speed":
+                current = int(farm.get('speed_level', 1) or 1)
+                if current >= 10:
+                    await db.rollback()
+                    return False, "Скорость уже на максимуме"
+                cost = farm_upgrade_cost(base_price, current)
+                ok = await spend_stars(user_id, cost)
+                if not ok:
+                    await db.rollback()
+                    return False, "Недостаточно звезд"
+                await db.execute("UPDATE farms SET speed_level = speed_level + 1 WHERE id = ?", (int(farm_id),))
+                await db.commit()
+                return True, f"⚡ Скорость улучшена до {current + 1} уровня (-{cost} ⭐)"
+
+            current = int(farm.get('cap_level', 1) or 1)
+            if current >= 10:
+                await db.rollback()
+                return False, "Лимит уже на максимуме"
+            cost = farm_upgrade_cost(base_price, current)
+            ok = await spend_stars(user_id, cost)
+            if not ok:
+                await db.rollback()
+                return False, "Недостаточно звезд"
+            await db.execute("UPDATE farms SET cap_level = cap_level + 1 WHERE id = ?", (int(farm_id),))
+            await db.commit()
+            return True, f"📦 Лимит улучшен до {current + 1} уровня (-{cost} ⭐)"
+        except Exception:
+            await db.rollback()
+            return False, "Ошибка при улучшении"
 
 
 async def get_active_contests() -> List[Dict]:
@@ -842,7 +1258,7 @@ async def get_or_create_user(user_id: int) -> Dict:
         if not user:
             internal_id = await get_next_internal_id()
             await db.execute(
-                "INSERT OR IGNORE INTO users (user_id, internal_id, stars, last_collect) VALUES (?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO users (user_id, internal_id, stars, last_collect, xp, level) VALUES (?, ?, ?, ?, 0, 1)",
                 (user_id, internal_id, 200, datetime.now().isoformat())
             )
 
@@ -1045,10 +1461,80 @@ async def calculate_total_boost(user_id: int) -> float:
             b = float(NFT_GIFTS[nft_type].get("boost", 1.0))
             total_boost += max(0.0, b - 1.0)
 
+    user = await get_or_create_user(user_id)
+    level = int(user.get('level', 1) or 1)
+    total_boost *= get_level_bonus_multiplier(level)
+    try:
+        buff = await get_active_global_buff()
+        if buff:
+            total_boost *= float(buff.get('multiplier', 1.0) or 1.0)
+    except Exception:
+        pass
     return min(total_boost, 2.5)
 
+
+def xp_needed_for_next_level(level: int) -> int:
+    level = int(level or 1)
+    if level < 1:
+        level = 1
+    return 100 * level
+
+
+def get_level_bonus_multiplier(level: int) -> float:
+    level = int(level or 1)
+    if level < 1:
+        level = 1
+    return 1.0 + (level - 1) * 0.005
+
+
+async def add_xp(user_id: int, amount: int) -> Dict:
+    amount = int(amount or 0)
+    if amount <= 0:
+        user = await get_or_create_user(user_id)
+        level = int(user.get('level', 1) or 1)
+        xp = int(user.get('xp', 0) or 0)
+        return {
+            'level': level,
+            'xp': xp,
+            'xp_needed': xp_needed_for_next_level(level),
+            'leveled_up': False,
+            'levels_gained': 0
+        }
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("BEGIN IMMEDIATE")
+        cursor = await db.execute("SELECT level, xp FROM users WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if not row:
+            await db.rollback()
+            user = await get_or_create_user(user_id)
+            level = int(user.get('level', 1) or 1)
+            xp = int(user.get('xp', 0) or 0)
+        else:
+            level = int(row['level'] or 1)
+            xp = int(row['xp'] or 0)
+
+        xp += amount
+        levels_gained = 0
+        while xp >= xp_needed_for_next_level(level):
+            xp -= xp_needed_for_next_level(level)
+            level += 1
+            levels_gained += 1
+
+        await db.execute("UPDATE users SET xp = ?, level = ? WHERE user_id = ?", (xp, level, user_id))
+        await db.commit()
+
+        return {
+            'level': level,
+            'xp': xp,
+            'xp_needed': xp_needed_for_next_level(level),
+            'leveled_up': levels_gained > 0,
+            'levels_gained': levels_gained
+        }
+
 async def collect_farm_income(user_id: int) -> int:
-    from config import FARM_TYPES
+    from config import FARM_TYPES, CASE_FARM_TYPES
     
     user = await get_or_create_user(user_id)
     farms = await get_user_farms(user_id)
@@ -1082,17 +1568,38 @@ async def collect_farm_income(user_id: int) -> int:
                 continue
         
         farm_type = farm['farm_type']
-        if farm_type in FARM_TYPES:
-            income_per_hour = FARM_TYPES[farm_type]["income_per_hour"]
+        farm_defs = {}
+        farm_defs.update(FARM_TYPES)
+        farm_defs.update(CASE_FARM_TYPES)
+        try:
+            special = await get_special_farm_types()
+            farm_defs.update(special)
+        except Exception:
+            pass
+        if farm_type in farm_defs:
+            base_income_per_hour = farm_defs[farm_type]["income_per_hour"]
+            speed_level = int(farm.get('speed_level', 1) or 1)
+            cap_level = int(farm.get('cap_level', 1) or 1)
+
+            eff_income_per_hour = base_income_per_hour
+            if not str(farm_type).startswith("case_"):
+                eff_income_per_hour = int(round(base_income_per_hour * farm_speed_multiplier(speed_level)))
+
+            cap_h = farm_cap_hours(cap_level) if not str(farm_type).startswith("case_") else 6.0
+
             if last_activated:
                 last_activated_dt = datetime.fromisoformat(last_activated)
-                collect_from = max(last_activated_dt, last_collect)
+                cap_from = now - timedelta(hours=cap_h)
+                collect_from = max(last_activated_dt, last_collect, cap_from)
                 hours_for_income = (now - collect_from).total_seconds() / 3600
                 hours_for_income = min(hours_for_income, hours_passed)
             else:
-                hours_for_income = hours_passed
+                cap_from = now - timedelta(hours=cap_h)
+                collect_from = max(last_collect, cap_from)
+                hours_for_income = (now - collect_from).total_seconds() / 3600
+                hours_for_income = min(hours_for_income, hours_passed)
             
-            total_income += income_per_hour * hours_for_income
+            total_income += eff_income_per_hour * hours_for_income
     
     boost = await calculate_total_boost(user_id)
     total_income = int(total_income * boost)
@@ -1291,7 +1798,7 @@ async def place_bid(auction_id: int, user_id: int, bid_amount: int) -> tuple[boo
         
         current_bid = auction_dict['current_bid']
         if bid_amount <= current_bid:
-            return False, f"Ставка должна быть больше {current_bid} ⭐"
+            return False, f"Ставка должна быть больше {current_bid} "
         
         user_stars = await get_user_stars(user_id)
         if user_stars < bid_amount:
@@ -1308,7 +1815,7 @@ async def place_bid(auction_id: int, user_id: int, bid_amount: int) -> tuple[boo
         )
         await db.commit()
         
-        return True, f"Ставка принята: {bid_amount} ⭐"
+        return True, f"Ставка принята: {bid_amount} "
 
 async def end_auction(auction_id: int) -> Optional[Dict]:
     async with aiosqlite.connect(DB_NAME) as db:
@@ -1478,8 +1985,8 @@ async def get_top_by_income_per_minute(limit: int = 5) -> List[Dict]:
                     last_activated = farm.get('last_activated')
                     if last_activated:
                         last_activated_dt = datetime.fromisoformat(last_activated)
-                        hours_passed = (now - last_activated_dt).total_seconds() / 3600
-                        if hours_passed < 6:
+                        hours_since_activation = (now - last_activated_dt).total_seconds() / 3600
+                        if hours_since_activation < 6:
                             farm_type = farm['farm_type']
                             if farm_type in FARM_TYPES:
                                 total_income_per_hour += FARM_TYPES[farm_type]['income_per_hour']
@@ -1510,3 +2017,579 @@ async def get_top_by_nft_count(limit: int = 5) -> List[Dict]:
         users = await cursor.fetchall()
         return [dict(user) for user in users]
 
+
+async def get_total_nft_count(nft_type: Optional[str] = None) -> int:
+    """Returns total minted NFT count.
+
+    If nft_type is provided, returns count only for that nft_type.
+    """
+    async with aiosqlite.connect(DB_NAME) as db:
+        if nft_type:
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM nfts WHERE nft_type = ?",
+                (str(nft_type),)
+            )
+        else:
+            cursor = await db.execute("SELECT COUNT(*) FROM nfts")
+        row = await cursor.fetchone()
+        return int(row[0] or 0)
+
+
+async def _is_saturday_now() -> bool:
+    try:
+        return datetime.now().weekday() == 5
+    except Exception:
+        return False
+
+
+async def get_special_farm_types() -> Dict[str, Dict]:
+    from config import SATURDAY_FARM_POOL
+
+    result: Dict[str, Dict] = {}
+    for f in SATURDAY_FARM_POOL:
+        key = str(f.get('key'))
+        if not key:
+            continue
+        result[key] = {
+            'name': f.get('name', key),
+            'income_per_hour': int(f.get('income_per_hour', 0) or 0)
+        }
+    return result
+
+
+async def get_or_create_saturday_offers() -> None:
+    if not await _is_saturday_now():
+        return
+
+    from config import SATURDAY_FARM_POOL
+
+    offer_date = datetime.now().date().isoformat()
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("BEGIN IMMEDIATE")
+
+        cursor = await db.execute(
+            "SELECT 1 FROM saturday_offers WHERE offer_date = ? LIMIT 1",
+            (offer_date,)
+        )
+        if await cursor.fetchone():
+            await db.commit()
+            return
+
+        pool = list(SATURDAY_FARM_POOL)
+        random.shuffle(pool)
+        picks = pool[: min(3, len(pool))]
+
+        for p in picks:
+            farm_key = str(p.get('key'))
+            name = str(p.get('name', farm_key))
+            income_per_hour = int(p.get('income_per_hour', 0) or 0)
+            price_stars = int(p.get('price_stars', 0) or 0)
+            price_crystals = int(p.get('price_crystals', 0) or 0)
+
+            await db.execute(
+                """
+                INSERT INTO saturday_offers (
+                    offer_date, farm_key, name, income_per_hour, price_stars, price_crystals, status
+                ) VALUES (?, ?, ?, ?, ?, ?, 'active')
+                """,
+                (offer_date, farm_key, name, income_per_hour, price_stars, price_crystals),
+            )
+
+        await db.commit()
+
+
+async def get_active_saturday_offers() -> List[Dict]:
+    offer_date = datetime.now().date().isoformat()
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT id, offer_date, farm_key, name, income_per_hour, price_stars, price_crystals
+            FROM saturday_offers
+            WHERE offer_date = ? AND status = 'active'
+            ORDER BY id ASC
+            """,
+            (offer_date,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def buy_saturday_offer(user_id: int, offer_id: int) -> Tuple[bool, str]:
+    if not await _is_saturday_now():
+        return False, "Сегодня субботнего магазина нет"
+
+    offer_date = datetime.now().date().isoformat()
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT * FROM saturday_offers
+            WHERE id = ? AND offer_date = ? AND status = 'active'
+            """,
+            (int(offer_id), offer_date),
+        )
+        row = await cursor.fetchone()
+
+    if not row:
+        return False, "Оффер не найден"
+
+    offer = dict(row)
+    ps = int(offer.get('price_stars', 0) or 0)
+    pc = int(offer.get('price_crystals', 0) or 0)
+    farm_key = str(offer.get('farm_key'))
+    name = str(offer.get('name', farm_key))
+
+    if pc > 0:
+        ok = await spend_crystals(user_id, pc)
+        if not ok:
+            return False, "Недостаточно кристаллов"
+    else:
+        ok = await spend_stars(user_id, ps)
+        if not ok:
+            return False, "Недостаточно звезд"
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO farms (user_id, farm_type, last_activated, is_active) VALUES (?, ?, ?, 0)",
+            (user_id, farm_key, datetime.now().isoformat()),
+        )
+        await db.commit()
+
+    return True, f"Куплено: {name}"
+
+
+def _current_season_key() -> str:
+    # ISO week key like 2025-W51
+    now = datetime.now()
+    iso_year, iso_week, _ = now.isocalendar()
+    return f"{iso_year}-W{int(iso_week):02d}"
+
+
+async def get_top_by_season_score(limit: int = 50) -> List[Dict]:
+    limit = int(limit or 50)
+    if limit <= 0:
+        limit = 50
+    if limit > 200:
+        limit = 200
+
+    season_key = _current_season_key()
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        users_cur = await db.execute("SELECT user_id, internal_id, stars FROM users")
+        users = await users_cur.fetchall()
+
+        # ensure snapshot exists for this season for all users
+        await db.execute("BEGIN IMMEDIATE")
+        for u in users:
+            uid = int(u[0])  # user_id is the first column
+            stars = int(u[2] or 0)  # stars is the third column
+            cursor = await db.execute(
+                "SELECT 1 FROM season_snapshots WHERE user_id = ? AND season_key = ? LIMIT 1",
+                (uid, season_key),
+            )
+            if not await cursor.fetchone():
+                await db.execute(
+                    "INSERT INTO season_snapshots (user_id, season_key, start_stars) VALUES (?, ?, ?)",
+                    (uid, season_key, stars),
+                )
+        await db.commit()
+
+        snap_cur = await db.execute(
+            """
+            SELECT u.user_id, u.internal_id, u.stars,
+                   (u.stars - s.start_stars) AS season_score
+            FROM users u
+            JOIN season_snapshots s
+              ON s.user_id = u.user_id AND s.season_key = ?
+            ORDER BY season_score DESC
+            LIMIT ?
+            """,
+            (season_key, limit),
+        )
+        rows = await snap_cur.fetchall()
+        return [
+            {
+                'user_id': r['user_id'],
+                'internal_id': r['internal_id'],
+                'stars': r['stars'],
+                'season_score': int(r['season_score'] or 0),
+            }
+            for r in rows
+        ]
+
+
+async def get_season_archive(limit_seasons: int = 5, limit_rows: int = 10) -> List[Dict]:
+    limit_seasons = int(limit_seasons or 5)
+    limit_rows = int(limit_rows or 10)
+    if limit_seasons <= 0:
+        limit_seasons = 5
+    if limit_rows <= 0:
+        limit_rows = 10
+    if limit_rows > 50:
+        limit_rows = 50
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        seasons_cur = await db.execute(
+            "SELECT DISTINCT season_key FROM season_archive ORDER BY season_key DESC LIMIT ?",
+            (limit_seasons,),
+        )
+        seasons = [r[0] for r in await seasons_cur.fetchall()]
+        if not seasons:
+            return []
+
+        result: List[Dict] = []
+        for sk in seasons:
+            rows_cur = await db.execute(
+                """
+                SELECT rank, internal_id, season_score, reward_stars
+                FROM season_archive
+                WHERE season_key = ?
+                ORDER BY rank ASC
+                LIMIT ?
+                """,
+                (sk, limit_rows),
+            )
+            rows = await rows_cur.fetchall()
+            result.append({'season': sk, 'rows': [dict(r) for r in rows]})
+        return result
+
+
+async def increment_user_stat(user_id: int, stat: str, amount: int = 1) -> None:
+    stat = (stat or '').strip()
+    if not stat:
+        return
+    amount = int(amount or 0)
+    if amount == 0:
+        return
+    if stat not in ('stars_collected', 'farms_bought', 'cases_opened'):
+        return
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO user_stats (user_id) VALUES (?)",
+            (int(user_id),),
+        )
+        await db.execute(
+            f"UPDATE user_stats SET {stat} = {stat} + ? WHERE user_id = ?",
+            (amount, int(user_id)),
+        )
+        await db.commit()
+
+
+async def get_user_stats(user_id: int) -> Dict:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT stars_collected, farms_bought, cases_opened FROM user_stats WHERE user_id = ?",
+            (int(user_id),),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return {'stars_collected': 0, 'farms_bought': 0, 'cases_opened': 0}
+        d = dict(row)
+        d['stars_collected'] = int(d.get('stars_collected', 0) or 0)
+        d['farms_bought'] = int(d.get('farms_bought', 0) or 0)
+        d['cases_opened'] = int(d.get('cases_opened', 0) or 0)
+        return d
+
+
+async def get_user_achievement_ids(user_id: int) -> List[str]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            "SELECT achievement_id FROM user_achievements WHERE user_id = ?",
+            (int(user_id),),
+        )
+        rows = await cursor.fetchall()
+        return [str(r[0]) for r in rows]
+
+
+async def create_nft_listing(user_id: int, nft_type: str, price: int, fee_pct: float = 0.0) -> Tuple[bool, str]:
+    """
+    Создаёт новое объявление на продажу NFT.
+    Возвращает (success: bool, message: str).
+    """
+    if not nft_type or not isinstance(price, int) or price <= 0:
+        return False, " Некорректные параметры"
+    
+    fee_pct = float(fee_pct or 0.0)
+    if fee_pct < 0 or fee_pct > 100:
+        fee_pct = 0.0
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Проверяем, есть ли у пользователя NFT такого типа
+        cursor = await db.execute(
+            "SELECT id FROM nfts WHERE user_id = ? AND nft_type = ? LIMIT 1",
+            (user_id, nft_type)
+        )
+        nft = await cursor.fetchone()
+        if not nft:
+            return False, f" У вас нет NFT типа {nft_type}"
+        
+        # Удаляем NFT у пользователя
+        await db.execute(
+            "DELETE FROM nfts WHERE id = ? AND user_id = ?",
+            (nft[0], user_id)
+        )
+        
+        # Создаём объявление
+        await db.execute(
+            """
+            INSERT INTO nft_listings (seller_id, nft_type, price, fee_pct, status)
+            VALUES (?, ?, ?, ?, 'active')
+            """,
+            (user_id, nft_type, price, fee_pct)
+        )
+        
+        await db.commit()
+        return True, f" NFT {nft_type} выставлен на продажу за {price}"
+            
+async def get_active_nft_listings(limit: int = 25, offset: int = 0) -> List[Dict]:
+    """
+    Возвращает активные объявления о продаже NFT.
+    """
+    limit = max(1, min(int(limit or 25), 100))
+    offset = max(0, int(offset or 0))
+    
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT l.*, u.internal_id as seller_internal_id
+            FROM nft_listings l
+            JOIN users u ON l.seller_id = u.user_id
+            WHERE l.status = 'active'
+            ORDER BY l.price ASC, l.created_at ASC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset)
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def buy_nft_listing(buyer_id: int, listing_id: int) -> Tuple[bool, str]:
+    """
+    Покупка NFT с маркетплейса.
+    Возвращает (success: bool, message: str).
+    """
+    if not listing_id or not buyer_id:
+        return False, " Некорректные параметры"
+    
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        
+        try:
+            # Получаем объявление
+            cursor = await db.execute(
+                """
+                SELECT l.*, u.stars as buyer_stars
+                FROM nft_listings l
+                JOIN users u ON u.user_id = ?
+                WHERE l.id = ? AND l.status = 'active' AND l.seller_id != ?
+                """,
+                (buyer_id, listing_id, buyer_id)
+            )
+            listing = await cursor.fetchone()
+            
+            if not listing:
+                return False, " Объявление не найдено или уже куплено"
+            
+            listing = dict(listing)
+            price = int(listing['price'])
+            seller_id = int(listing['seller_id'])
+            nft_type = listing['nft_type']
+            fee_pct = float(listing.get('fee_pct', 0.0))
+            
+            # Проверяем баланс покупателя
+            buyer_stars = int(listing.get('buyer_stars', 0))
+            if buyer_stars < price:
+                return False, f" Недостаточно звёзд. Нужно: {price} "
+            
+            # Вычисляем комиссию
+            fee_amount = int(price * (fee_pct / 100.0))
+            seller_gets = price - fee_amount
+            
+            # Списание у покупателя
+            await db.execute(
+                "UPDATE users SET stars = stars - ? WHERE user_id = ?",
+                (price, buyer_id)
+            )
+            
+            # Зачисление продавцу (за вычетом комиссии)
+            if seller_gets > 0:
+                await db.execute(
+                    "UPDATE users SET stars = stars + ? WHERE user_id = ?",
+                    (seller_gets, seller_id)
+                )
+            
+            # Передаём NFT покупателю
+            await db.execute(
+                "INSERT INTO nfts (user_id, nft_type) VALUES (?, ?)",
+                (buyer_id, nft_type)
+            )
+            
+            # Помечаем объявление как проданное
+            await db.execute(
+                """
+                UPDATE nft_listings 
+                SET status = 'sold', 
+                    sold_at = CURRENT_TIMESTAMP, 
+                    buyer_id = ?
+                WHERE id = ?
+                """,
+                (buyer_id, listing_id)
+            )
+            
+            await db.commit()
+            return True, f" Вы купили NFT {nft_type} за {price} "
+            
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"Error in buy_nft_listing: {str(e)}", exc_info=True)
+            return False, " Ошибка при покупке NFT"
+
+
+async def upgrade_farm(farm_id: int, user_id: int) -> Tuple[bool, str]:
+    """
+    Upgrade a farm with a random chance of getting an income boost
+    Returns: (success: bool, message: str)
+    """
+    upgrade_chances = [
+        (2.0, 0.05, 100),   # 5% chance for 2x boost (красный)
+        (1.5, 0.15, 50),    # 15% chance for 1.5x boost (оранжевый)
+        (1.2, 0.30, 20),    # 30% chance for 1.2x boost (желтый)
+        (1.0, 0.50, 0)      # 50% chance for no boost (зеленый)
+    ]
+    
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT f.id, f.user_id, f.farm_type, 
+                   COALESCE(fu.income_boost, 1.0) as income_boost,
+                   COALESCE(fu.upgrade_level, 0) as upgrade_level,
+                   u.stars
+            FROM farms f
+            LEFT JOIN farm_upgrades fu ON f.id = fu.farm_id
+            JOIN users u ON f.user_id = u.user_id
+            WHERE f.id = ? AND f.user_id = ?
+            """, 
+            (farm_id, user_id)
+        )
+        farm = await cursor.fetchone()
+        
+        if not farm:
+            return False, "Ферма не найдена или у вас нет к ней доступа"
+        
+        current_boost = farm['income_boost']
+        current_level = farm['upgrade_level']
+        
+        # Calculate upgrade cost (increases with level)
+        upgrade_cost = 100 * (current_level + 1)
+        
+        # Check if user has enough stars
+        if farm['stars'] < upgrade_cost:
+            return False, f"❌ Недостаточно звезд! Нужно {upgrade_cost}⭐"
+        
+        # Deduct stars
+        await db.execute(
+            "UPDATE users SET stars = stars - ? WHERE user_id = ?",
+            (upgrade_cost, user_id)
+        )
+        
+        # Roll for upgrade
+        roll = random.random()
+        cumulative = 0
+        new_boost = 1.0
+        boost_name = ""
+        
+        for boost, chance, _ in upgrade_chances:
+            cumulative += chance
+            if roll < cumulative:
+                new_boost = boost
+                if boost == 2.0:
+                    boost_name = "🔥 КРИТИЧЕСКИЙ УРОВЕНЬ! x2.0"
+                elif boost == 1.5:
+                    boost_name = "🔶 Отличный результат! x1.5"
+                elif boost == 1.2:
+                    boost_name = "🔸 Неплохо! x1.2"
+                else:
+                    boost_name = "✅ Без изменений"
+                break
+        
+        # Update farm upgrade
+        new_level = current_level + 1
+        
+        if current_level > 0:
+            await db.execute(
+                """
+                UPDATE farm_upgrades 
+                SET income_boost = ?, upgrade_level = ?, last_upgraded = CURRENT_TIMESTAMP
+                WHERE farm_id = ?
+                """,
+                (new_boost, new_level, farm_id)
+            )
+        else:
+            await db.execute(
+                """
+                INSERT INTO farm_upgrades (farm_id, income_boost, upgrade_level, last_upgraded)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (farm_id, new_boost, new_level)
+            )
+        
+        await db.commit()
+        
+        if new_boost > 1.0:
+            return True, (
+                f"{boost_name}\n"
+                f"Уровень улучшения: {new_level} (+{int((new_boost-1)*100)}% к доходу)\n"
+                f"Следующее улучшение: {100 * (new_level + 1)}⭐"
+            )
+        else:
+            return True, (
+                f"{boost_name}\n"
+                f"Уровень: {new_level} (Доход не изменился)\n"
+                f"Попробуйте снова!"
+            )
+
+async def get_farm_income(
+    farm_type: str, 
+    speed_level: int = 1, 
+    cap_level: int = 1,
+    farm_id: int = None
+) -> Tuple[float, int]:
+    """
+    Calculate farm income based on type, levels and upgrades
+    Returns: (income_per_hour, capacity)
+    """
+    from config import FARM_TYPES, CASE_FARM_TYPES
+    
+    # Get base income and capacity from config
+    farm_defs = {**FARM_TYPES, **CASE_FARM_TYPES}
+    if farm_type not in farm_defs:
+        return 0.0, 0
+        
+    base_income = farm_defs[farm_type].get('income_per_hour', 10)
+    base_capacity = farm_defs[farm_type].get('capacity', 10)
+    
+    # Apply speed and capacity level bonuses
+    income = base_income * (1 + (speed_level - 1) * 0.2)
+    capacity = int(base_capacity * (1 + (cap_level - 1) * 0.5))
+    
+    # Apply upgrade boost if farm_id is provided
+    if farm_id:
+        async with aiosqlite.connect(DB_NAME) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT income_boost FROM farm_upgrades WHERE farm_id = ?", 
+                (farm_id,)
+            )
+            result = await cursor.fetchone()
+            if result and result['income_boost']:
+                income *= result['income_boost']
+    
+    return income, capacity

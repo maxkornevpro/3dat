@@ -2,10 +2,17 @@ import asyncio
 import logging
 import os
 from aiohttp import web
+from datetime import datetime
+from typing import Optional
+
+import aiosqlite
+
+# Database configuration
+DB_NAME = "game_bot.db"
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command, CommandStart
-from config import BOT_TOKEN, FARM_TYPES, NFT_GIFTS, GAME_NAME, ADMIN_IDS, CRYSTAL_SHOP, CRYSTAL_CASES, CASE_ITEMS, CONTESTS
+from config import BOT_TOKEN, FARM_TYPES, NFT_GIFTS, GAME_NAME, ADMIN_IDS, CRYSTAL_SHOP, CRYSTAL_CASES, CASE_ITEMS, CONTESTS, STAR_FARM_CASES, CASE_FARM_TYPES
 from database import (
     init_db, get_or_create_user, get_user_stars, 
     buy_farm, get_user_farms, buy_nft, get_user_nfts,
@@ -26,8 +33,23 @@ from database import (
     get_active_contests, add_contest, clear_contests,
     get_farm_dynamic_price, buy_farm_dynamic,
     create_user_farm_auction, create_user_nft_auction, get_active_user_auctions,
-    place_user_farm_bid, place_user_nft_bid, end_user_farm_auction, end_user_nft_auction
+    place_user_farm_bid, place_user_nft_bid, end_user_farm_auction, end_user_nft_auction,
+    add_xp, xp_needed_for_next_level, get_level_bonus_multiplier
 )
+
+from database import add_case_drop, get_case_drops
+
+from database import upgrade_farm
+
+from database import get_or_create_global_quest, add_global_quest_progress, get_active_global_buff
+
+from database import get_or_create_saturday_offers, get_active_saturday_offers, buy_saturday_offer, get_special_farm_types
+
+from database import get_total_nft_count
+from database import get_top_by_season_score, get_season_archive
+
+from database import increment_user_stat, get_user_stats, get_user_achievement_ids
+from database import create_nft_listing, get_active_nft_listings, buy_nft_listing
 
 from database import (
     get_user_crystals, transfer_crystals, collect_farm_income_with_crystals,
@@ -196,42 +218,32 @@ async def cmd_start(message: Message):
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
     help_text = (
-        f"📖 Справка по командам {GAME_NAME}\n\n"
-        "🔹 /start - Начать игру или зарегистрироваться\n"
-        "🔹 /help - Показать эту справку\n"
-        "🔹 /profile - Показать ваш профиль\n"
-        "🔹 /farms - Показать ваши фермы\n"
-        "🔹 /shop - Открыть магазин ферм\n"
-        "🔹 /nft - Открыть магазин NFT\n"
-        "🔹 /collect - Собрать доход с ферм\n"
-        "🔹 /activate - Активировать фермы (каждые 6 часов)\n"
-        "🔹 /cases - Кейсы за кристаллы\n"
-        "🔹 /crystals - Баланс кристаллов\n"
-        "🔹 /crystal_shop - Обмен кристаллов на звезды\n"
-        "🔹 /send_crystals <target> <amount> - Отправить кристаллы\n"
-        "    target: internal_id | telegram_id | @username\n"
-        "🔹 /sell_farm <farm_id> <target> <price> - Продать ферму (трейд)\n"
-        "    target: internal_id | telegram_id | @username\n"
-        "🔹 /referral - Получить реферальную ссылку\n"
-        "🔹 /auction - Показать активные аукционы\n"
-        "🔹 /top - ТОП-50 игроков по звездам\n\n"
-        "🔹 /inventory - Инвентарь предметов\n"
-        "🔹 /set_prefix <item_key|off> - Поставить/снять префикс\n"
-        "🔹 /send_item <target> <item_key> <qty> - Отправить предмет\n"
-        "🔹 /send_stars <target> <amount> - Отправить звезды\n"
-        "🔹 /contests - Конкурсы\n"
-        "\nАукционы:\n"
-        "🔹 /sell_item <item_key> <qty> <start_price> - Выставить предмет\n"
-        "🔹 /bid_item <auction_id> <amount> - Ставка на предмет\n"
-        "🔹 /aucsell <farm|nft> <key> <start_price> - Выставить ферму/NFT\n"
-        "    ограничение: стартовая цена <= реальная_цена/1.5\n"
-        "🔹 /bid_ufarm <id> <amount> - Ставка на ферму игрока\n"
-        "🔹 /bid_unft <id> <amount> - Ставка на NFT игрока\n\n"
-        "💡 Важно:\n"
-        "• Фермы нужно активировать каждые 6 часов\n"
-        "• Только активированные фермы приносят доход\n"
-        "• Используйте NFT для увеличения дохода\n"
-        "• Приглашайте друзей по реферальной ссылке!"
+        f"📖 Команды\n\n"
+        "Основное:\n"
+        "- /profile\n"
+        "- /farms\n"
+        "- /shop\n"
+        "- /saturday\n"
+        "- /nft\n"
+        "- /collect\n"
+        "- /activate\n"
+        "- /cases\n"
+        "- /quests\n"
+        "- /achievements\n"
+        "- /top\n"
+        "- /top_archive\n"
+        "- /nftmarket\n\n"
+        "Переводы/торговля:\n"
+        "- /send_stars <target> <amount>\n"
+        "- /send_crystals <target> <amount>\n"
+        "- /sell_farm <farm_id> <target> <price>\n\n"
+        "NFT Маркет:\n"
+        "- /nftsell <nft_key> <price>\n"
+        "- /nftbuy <id>\n\n"
+        "Предметы:\n"
+        "- /inventory\n"
+        "- /set_prefix <item_key|off>\n"
+        "- /send_item <target> <item_key> <qty>\n"
     )
     
     if message.chat.type == "private":
@@ -245,19 +257,18 @@ async def cmd_ahelp(message: Message):
         return
 
     ahelp_text = (
-        "🛠 Админ-команды\n\n"
-        "🔸 /profile_id <internal_id> - Профиль по игровому ID\n"
-        "🔸 /add_stars <target> <amount> - Выдать/снять звезды\n"
-        "🔸 /add_crystals <target> <amount> - Выдать/снять кристаллы\n"
-        "    target: internal_id | telegram_id | @username\n"
-        "\nКонкурсы:\n"
-        "🔸 /contest_add title|description|reward|how_to - Добавить конкурс\n"
-        "🔸 /contest_list - Список активных конкурсов\n"
-        "🔸 /contest_clear - Завершить/очистить активные конкурсы\n"
-        "\nЗавершение аукционов:\n"
-        "🔸 /end_item_auction <id> - Завершить аукцион предмета\n"
-        "🔸 /end_ufarm <id> - Завершить аукцион фермы игрока (/aucsell)\n"
-        "🔸 /end_unft <id> - Завершить аукцион NFT игрока (/aucsell)\n"
+        "🛠 Админ\n\n"
+        "- /profile_id <internal_id>\n"
+        "- /add_stars <target> <amount>\n"
+        "- /add_crystals <target> <amount>\n\n"
+        "Конкурсы:\n"
+        "- /contest_add title|description|reward|how_to\n"
+        "- /contest_list\n"
+        "- /contest_clear\n\n"
+        "Аукционы (завершение):\n"
+        "- /end_item_auction <id>\n"
+        "- /end_ufarm <id>\n"
+        "- /end_unft <id>\n"
     )
 
     if message.chat.type == "private":
@@ -319,15 +330,124 @@ async def cmd_referral(message: Message):
             f"👥 Приглашено: {referrals}" + reward_text
         )
     else:
-        text = (
-            "❌ Не удалось сформировать реферальную ссылку.\n"
-            "Попробуйте позже или используйте /start."
-        )
+        text = "Не смог сделать ссылку. Попробуй позже."
 
     if message.chat.type == "private":
         await message.answer(text)
     else:
         await message.reply(text)
+
+
+def roll_rarity(rarity_weights: dict) -> str:
+    import random
+    items = []
+    for k, w in (rarity_weights or {}).items():
+        try:
+            w = int(w)
+        except Exception:
+            w = 0
+        if w > 0:
+            items.append({"rarity": k, "weight": w})
+    total = sum(i["weight"] for i in items)
+    if total <= 0:
+        return "common"
+    r = random.uniform(0, total)
+    upto = 0
+    for it in items:
+        upto += it["weight"]
+        if upto >= r:
+            return it["rarity"]
+    return items[-1]["rarity"]
+
+
+def pick_case_farm_by_rarity(rarity: str) -> Optional[str]:
+    import random
+    rarity = (rarity or "common").lower()
+    candidates = [k for k, v in CASE_FARM_TYPES.items() if (v.get('rarity') == rarity)]
+    return random.choice(candidates) if candidates else None
+
+
+@dp.callback_query(F.data == "case_history")
+async def case_history(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    rows = await get_case_drops(user_id, limit=20)
+    if not rows:
+        await callback.message.answer("📜 Дроп\n\nПока пусто.")
+        await callback.answer()
+        return
+
+    text = "📜 История дропа (последние 20)\n\n"
+    for r in rows:
+        text += f"- {r.get('reward_text')} ({r.get('case_type')})\n"
+
+    await callback.message.answer(text)
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("open_star_case_"))
+async def open_star_case(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    case_id = callback.data.split("_")[-1]
+    if case_id not in STAR_FARM_CASES:
+        await callback.answer("❌ Кейс не найден", show_alert=True)
+        return
+
+    case = STAR_FARM_CASES[case_id]
+    price = int(case.get('price_stars', 0) or 0)
+    if price <= 0:
+        await callback.answer("❌ Ошибка кейса", show_alert=True)
+        return
+
+    ok = await spend_stars(user_id, price)
+    if not ok:
+        stars = await get_user_stars(user_id)
+        await callback.answer(f"❌ Недостаточно звезд (нужно {price}, у вас {stars})", show_alert=True)
+        return
+
+    rarity = roll_rarity(case.get('rarity_weights', {}))
+    farm_key = pick_case_farm_by_rarity(rarity)
+    if not farm_key:
+        await add_stars(user_id, int(price * 0.6))
+        reward_text = f"⭐ Возврат: {int(price * 0.6)} звезд"
+        await add_case_drop(user_id, f"star:{case_id}", reward_text)
+        await callback.message.answer(f"🎁 {case['name']}\n\nПолучено: {reward_text}")
+        await callback.answer("✅ Кейс открыт!", show_alert=True)
+        try:
+            await increment_user_stat(user_id, 'cases_opened', 1)
+        except Exception:
+            pass
+        return
+
+    farm_def = CASE_FARM_TYPES.get(farm_key, {})
+    farm_name = farm_def.get('name', farm_key)
+    async with aiosqlite.connect("game_bot.db") as db:
+        await db.execute(
+            "INSERT INTO farms (user_id, farm_type, last_activated, is_active) VALUES (?, ?, ?, 0)",
+            (user_id, farm_key, datetime.now().isoformat())
+        )
+        await db.commit()
+
+    reward_text = f"🌾 {farm_name}"
+    await add_case_drop(user_id, f"star:{case_id}", reward_text)
+    await add_xp(user_id, 10)
+    try:
+        await add_case_drop(user_id, f"crystal:{case_id}", reward_text)
+    except Exception:
+        pass
+
+    try:
+        await increment_user_stat(user_id, 'cases_opened', 1)
+    except Exception:
+        pass
+
+    stars = await get_user_stars(user_id)
+    crystals = await get_user_crystals(user_id)
+    await callback.message.answer(
+        f"🎁 Вы открыли кейс: {case['name']}\n\n"
+        f"Получено: {reward_text}\n\n"
+        f"Баланс: ⭐ {stars} | 💎 {crystals}"
+    )
+    await callback.answer("✅ Кейс открыт!", show_alert=True)
 
 @dp.message(F.text == "🔗 Реферальная ссылка")
 async def referral_button(message: Message):
@@ -335,14 +455,15 @@ async def referral_button(message: Message):
 
 @dp.message(Command("top"))
 async def cmd_top(message: Message):
-    top = await get_top_by_balance(limit=50)
+    top = await get_top_by_season_score(limit=50)
     if not top:
         await message.reply("🏆 Топ игроков пока пуст")
         return
 
-    lines = ["🏆 ТОП-50 игроков по звездам\n"]
+    lines = ["🏆 ТОП-50 недели (прирост ⭐)\n"]
     for idx, row in enumerate(top, start=1):
         user_id = row.get('user_id')
+        score = int(row.get('season_score', 0) or 0)
         stars = row.get('stars', 0)
         internal_id = row.get('internal_id', 'N/A')
         name = f"ID {internal_id}"
@@ -365,7 +486,7 @@ async def cmd_top(message: Message):
         except Exception:
             pass
 
-        lines.append(f"{idx}. {name} — {stars} ⭐")
+        lines.append(f"{idx}. {name} — +{score} ⭐ (всего {stars})")
 
     text = "\n".join(lines)
     if len(text) > 3800:
@@ -380,6 +501,43 @@ async def cmd_top(message: Message):
 async def top_button(message: Message):
     await cmd_top(message)
 
+
+@dp.message(F.text == "📜 Архив топа")
+async def top_archive_button(message: Message):
+    await cmd_top_archive(message)
+
+
+@dp.message(Command("top_archive"))
+async def cmd_top_archive(message: Message):
+    data = await get_season_archive(limit_seasons=5, limit_rows=10)
+    if not data:
+        await message.reply("📜 Архив топа пуст")
+        return
+
+    text = "📜 Архив сезонов (последние 5)\n\n"
+    for block in data:
+        s = block.get('season', {})
+        rows = block.get('rows', [])
+        key = s.get('season_key', '—')
+        text += f"🏁 Сезон {key}\n"
+        if not rows:
+            text += "- нет данных\n\n"
+            continue
+        for r in rows:
+            rid = r.get('internal_id', 'N/A')
+            score = int(r.get('season_score', 0) or 0)
+            reward = int(r.get('reward_stars', 0) or 0)
+            text += f"{int(r.get('rank'))}. ID {rid} — +{score} ⭐ | награда {reward} ⭐\n"
+        text += "\n"
+
+    if len(text) > 3800:
+        text = text[:3800] + "\n..."
+
+    if message.chat.type == "private":
+        await message.answer(text)
+    else:
+        await message.reply(text)
+
 @dp.message(Command("inventory"))
 async def cmd_inventory(message: Message):
     user_id = message.from_user.id
@@ -387,17 +545,17 @@ async def cmd_inventory(message: Message):
     prefix = await get_user_prefix(user_id)
 
     text = "🎒 Инвентарь\n\n"
-    text += f"🏷 Префикс: {prefix or '—'}\n\n"
+    text += f"Префикс: {prefix or '—'}\n\n"
     if not items:
-        text += "Пока пусто. Открывай /cases"
+        text += "Пока пусто. Открой /cases"
     else:
-        text += "Ваши предметы:\n"
+        text += "Предметы:\n"
         for it in items:
             key = it.get('item_key')
             qty = it.get('qty', 0)
             text += f"- {item_display_name(key)} x{qty} (`{key}`)\n"
-        text += "\nЧтобы поставить префикс: /set_prefix <item_key>\n"
-        text += "Чтобы отправить предмет: /send_item <target> <item_key> <qty>\n"
+        text += "\nПрефикс: /set_prefix <item_key>\n"
+        text += "Отправить предмет: /send_item <target> <item_key> <qty>\n"
 
     if message.chat.type == "private":
         await message.answer(text)
@@ -413,7 +571,7 @@ async def cmd_set_prefix(message: Message):
     user_id = message.from_user.id
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
-        await message.reply("Использование: /set_prefix <item_key>\nЧтобы убрать: /set_prefix off")
+        await message.reply("/set_prefix <item_key>\nСнять: /set_prefix off")
         return
 
     value = args[1].strip()
@@ -439,7 +597,7 @@ async def cmd_set_prefix(message: Message):
 async def cmd_send_item(message: Message):
     args = message.text.split()
     if len(args) < 4:
-        await message.reply("Использование: /send_item <target> <item_key> <qty>")
+        await message.reply("/send_item <target> <item_key> <qty>")
         return
 
     target = args[1]
@@ -447,7 +605,7 @@ async def cmd_send_item(message: Message):
     try:
         qty = int(args[3])
     except ValueError:
-        await message.reply("❌ qty должен быть числом")
+        await message.reply("❌ Кол-во должно быть числом")
         return
 
     resolved = await resolve_target_user(target)
@@ -472,16 +630,16 @@ async def cmd_send_item(message: Message):
 async def cmd_send_stars(message: Message):
     args = message.text.split()
     if len(args) < 3:
-        await message.reply("Использование: /send_stars <target> <amount>")
+        await message.reply("/send_stars <target> <amount>")
         return
     target = args[1]
     try:
         amount = int(args[2])
     except ValueError:
-        await message.reply("❌ amount должен быть числом")
+        await message.reply("❌ Сумма должна быть числом")
         return
     if amount <= 0:
-        await message.reply("❌ amount должен быть > 0")
+        await message.reply("❌ Сумма должна быть > 0")
         return
 
     resolved = await resolve_target_user(target)
@@ -500,7 +658,7 @@ async def cmd_send_stars(message: Message):
         await message.reply("❌ Недостаточно звезд")
         return
 
-    await message.reply(f"✅ Вы отправили {amount} ⭐ пользователю {target}")
+    await message.reply(f"✅ Отправлено: {amount} ⭐ → {target}")
 
 @dp.message(Command("contests"))
 async def cmd_contests(message: Message):
@@ -512,8 +670,8 @@ async def cmd_contests(message: Message):
         for idx, c in enumerate(contests, start=1):
             text += f"{idx}. {c.get('title','')}\n"
             text += f"   {c.get('description','')}\n"
-            text += f"   🎁 Награда: {c.get('reward','')}\n"
-            text += f"   ✅ Как участвовать: {c.get('how_to','')}\n\n"
+            text += f"   Награда: {c.get('reward','')}\n"
+            text += f"   Как участвовать: {c.get('how_to','')}\n\n"
 
     if message.chat.type == "private":
         await message.answer(text)
@@ -524,6 +682,117 @@ async def cmd_contests(message: Message):
 async def contests_button(message: Message):
     await cmd_contests(message)
 
+
+@dp.message(F.text == "🎯 Задания")
+async def quests_button(message: Message):
+    await cmd_quests(message)
+
+
+@dp.message(Command("achievements"))
+async def cmd_achievements(message: Message):
+    from config import ACHIEVEMENTS
+    user_id = message.from_user.id
+    stats = await get_user_stats(user_id)
+    got = await get_user_achievement_ids(user_id)
+
+    text = "🏅 Достижения\n\n"
+    for a in ACHIEVEMENTS:
+        aid = str(a.get('id'))
+        title = a.get('title') or aid
+        stat = a.get('stat')
+        target = int(a.get('target', 0) or 0)
+        cur = int(stats.get(stat, 0) or 0)
+        done = aid in got
+        reward_s = int(a.get('reward_stars', 0) or 0)
+        reward_c = int(a.get('reward_crystals', 0) or 0)
+        reward_txt = ""
+        if reward_s > 0:
+            reward_txt += f" +{reward_s}⭐"
+        if reward_c > 0:
+            reward_txt += f" +{reward_c}💎"
+
+        status = "✅" if done else "▫️"
+        text += f"{status} {title}: {cur}/{target}{reward_txt}\n"
+
+    if message.chat.type == "private":
+        await message.answer(text)
+    else:
+        await message.reply(text)
+
+
+@dp.message(F.text == "🏅 Достижения")
+async def achievements_button(message: Message):
+    await cmd_achievements(message)
+
+
+@dp.message(Command("nftmarket"))
+async def cmd_nftmarket(message: Message):
+    listings = await get_active_nft_listings(limit=25)
+    if not listings:
+        await message.reply("🛍 NFT Маркет\n\nПока пусто.\nПродать: /nftsell <nft_key> <price>")
+        return
+
+    text = "🛍 NFT Маркет\n\n"
+    for l in listings:
+        lid = l.get('id')
+        nft_type = l.get('nft_type')
+        price = l.get('price')
+        name = NFT_GIFTS.get(nft_type, {}).get('name', str(nft_type))
+        text += f"🆔 {lid} — {name} — {price} ⭐\n"
+
+    text += "\nКупить: /nftbuy <id>\nПродать: /nftsell <nft_key> <price>"
+    if message.chat.type == "private":
+        await message.answer(text)
+    else:
+        await message.reply(text)
+
+
+@dp.message(F.text == "🛍 NFT Маркет")
+async def nft_market_button(message: Message):
+    await cmd_nftmarket(message)
+
+
+@dp.message(Command("nftsell"))
+async def cmd_nftsell(message: Message):
+    from config import NFT_MARKET_FEE_PCT
+    args = message.text.split()
+    if len(args) < 3:
+        await message.reply("/nftsell <nft_key> <price>")
+        return
+    nft_key = args[1]
+    try:
+        price = int(args[2])
+    except ValueError:
+        await message.reply("❌ Цена должна быть числом")
+        return
+
+    user_id = message.from_user.id
+    ok, msg = await create_nft_listing(user_id, nft_key, price, float(NFT_MARKET_FEE_PCT))
+    if ok:
+        await message.reply(f"✅ {msg}\nКомиссия: {int(float(NFT_MARKET_FEE_PCT)*100)}%")
+    else:
+        await message.reply(f"❌ {msg}")
+
+
+@dp.message(Command("nftbuy"))
+async def cmd_nftbuy(message: Message):
+    args = message.text.split()
+    if len(args) < 2:
+        await message.reply("/nftbuy <id>")
+        return
+    try:
+        listing_id = int(args[1])
+    except ValueError:
+        await message.reply("❌ ID должен быть числом")
+        return
+
+    user_id = message.from_user.id
+    ok, msg = await buy_nft_listing(user_id, listing_id)
+    if ok:
+        await message.reply(f"✅ {msg}")
+    else:
+        await message.reply(f"❌ {msg}")
+
 @dp.message(Command("contest_add"))
 async def cmd_contest_add(message: Message):
     if message.from_user.id not in ADMIN_IDS:
@@ -531,7 +800,7 @@ async def cmd_contest_add(message: Message):
 
     raw = message.text[len("/contest_add"):].strip()
     if not raw or "|" not in raw:
-        await message.reply("Использование: /contest_add title|description|reward|how_to")
+        await message.reply("/contest_add title|description|reward|how_to")
         return
 
     parts = [p.strip() for p in raw.split("|")]
@@ -575,7 +844,7 @@ async def cmd_aucsell(message: Message):
     user_id = message.from_user.id
     args = message.text.split()
     if len(args) < 4:
-        await message.reply("Использование: /aucsell <farm|nft> <key> <start_price>")
+        await message.reply("/aucsell <farm|nft> <key> <start_price>")
         return
     kind = args[1].lower()
     key = args[2]
@@ -631,6 +900,7 @@ async def cmd_profile_id(message: Message):
         user_id = user['user_id']
         stars = user['stars']
         farms = await get_user_farms(user_id)
+        special_defs = await get_special_farm_types()
         nfts = await get_user_nfts(user_id)
         boost = await calculate_total_boost(user_id)
         referrals = await get_referral_count(user_id)
@@ -673,6 +943,10 @@ async def show_profile_handler(message: Message):
     user = await get_or_create_user(user_id)
     stars = user['stars']
     crystals = user.get('crystals', 0) or 0
+    level = int(user.get('level', 1) or 1)
+    xp = int(user.get('xp', 0) or 0)
+    xp_needed = xp_needed_for_next_level(level)
+    level_bonus_pct = round((get_level_bonus_multiplier(level) - 1) * 100, 2)
     
     farms = await get_user_farms(user_id)
     nfts = await get_user_nfts(user_id)
@@ -696,15 +970,15 @@ async def show_profile_handler(message: Message):
     prefix_text = f"{prefix} " if prefix else ""
 
     profile_text = (
-        f"👤 Ваш профиль\n\n"
-        f"🆔 ID: {internal_id}\n"
-        f"🏷 Префикс: {prefix or '—'}\n"
-        f"⭐ Звезд: {stars}\n"
-        f"💎 Кристаллов: {crystals}\n"
-        f"🌾 Ферм: {len(farms)} (активных: {active_farms})\n"
-        f"🎁 NFT: {len(nfts)}\n"
-        f"⚡ Буст к доходу: {int((boost - 1) * 100)}%\n"
-        f"🔗 Рефералов: {referrals}\n\n"
+        f"⭐ Профиль\n\n"
+        f"ID: {internal_id}\n"
+        f"Префикс: {prefix or '—'}\n"
+        f"Уровень: {level} | XP: {xp}/{xp_needed}\n"
+        f"Бонус уровня: +{level_bonus_pct}% к доходу\n\n"
+        f"Баланс: {stars} ⭐ | {crystals} 💎\n"
+        f"Фермы: {len(farms)} (активных {active_farms})\n"
+        f"NFT: {len(nfts)} | Буст: {int((boost - 1) * 100)}%\n"
+        f"Рефералы: {referrals}\n\n"
     )
     
     if farms:
@@ -730,9 +1004,17 @@ async def show_profile_handler(message: Message):
         total_all_base_per_hour = 0
 
         for farm_type, data in farm_counts.items():
-            if farm_type not in FARM_TYPES:
+            farm_defs = {}
+            farm_defs.update(FARM_TYPES)
+            farm_defs.update(CASE_FARM_TYPES)
+            try:
+                special_defs = await get_special_farm_types()
+                farm_defs.update(special_defs)
+            except Exception as e:
+                logging.warning(f"Could not load special farm types: {e}")
+            if farm_type not in farm_defs:
                 continue
-            farm_data = FARM_TYPES[farm_type]
+            farm_data = farm_defs[farm_type]
             total = data['total']
             active = data['active']
             status = "✅" if active > 0 else "❌"
@@ -789,7 +1071,7 @@ async def show_farms_handler(message: Message):
     farms = await get_user_farms(user_id)
     
     if not farms:
-        response = "У вас пока нет ферм. Купите их в магазине! 🛒"
+        response = "🌾 Фермы\n\nПока пусто. Открой магазин: /shop"
         if message.chat.type == "private":
             await message.answer(response)
         else:
@@ -822,14 +1104,22 @@ async def show_farms_handler(message: Message):
         else:
             inactive_count += 1
     
-    farms_text = "🌾 Ваши фермы:\n\n"
+    farms_text = "🌾 Фермы\n\n"
     boost = await calculate_total_boost(user_id)
     total_all_base_per_hour = 0
     total_active_base_per_hour = 0
 
+    farm_defs = {}
+    farm_defs.update(FARM_TYPES)
+    farm_defs.update(CASE_FARM_TYPES)
+    try:
+        farm_defs.update(await get_special_farm_types())
+    except Exception:
+        pass
+
     for farm_type, data in farm_counts.items():
-        if farm_type in FARM_TYPES:
-            farm_data = FARM_TYPES[farm_type]
+        if farm_type in farm_defs:
+            farm_data = farm_defs[farm_type]
             total = data['total']
             active = data['active']
             inactive = total - active
@@ -843,28 +1133,165 @@ async def show_farms_handler(message: Message):
 
             income_per_min = round(base_active_per_hour / 60, 2)
             status = "✅" if active > 0 else "❌"
-            farms_text += f"{status} {farm_data['name']}: {total} шт. (активных: {active})\n"
+            farms_text += f"{status} {farm_data['name']} — {total} шт. (активных {active})\n"
             if active > 0:
                 farms_text += f"  Доход (активные) без буста: {income_per_min} ⭐/мин | {base_active_per_hour} ⭐/час\n"
                 farms_text += f"  ⚡ Доход (активные) с бустом: {round(boosted_active_per_hour / 60, 2)} ⭐/мин | {boosted_active_per_hour} ⭐/час\n\n"
             else:
-                farms_text += f"  ⚠️ Требуется активация (/activate)\n\n"
+                farms_text += f"  ⚠️ Требуется активация: /activate\n\n"
 
     total_active_boosted_per_hour = int(total_active_base_per_hour * boost)
     total_all_boosted_per_hour = int(total_all_base_per_hour * boost)
 
-    farms_text += f"📊 Итого (активные) без буста: {round(total_active_base_per_hour / 60, 2)} ⭐/мин | {total_active_base_per_hour} ⭐/час\n"
-    farms_text += f"⚡ Итого (активные) с бустом: {round(total_active_boosted_per_hour / 60, 2)} ⭐/мин | {total_active_boosted_per_hour} ⭐/час\n"
-    farms_text += f"📊 Итого (все фермы) без буста: {round(total_all_base_per_hour / 60, 2)} ⭐/мин | {total_all_base_per_hour} ⭐/час\n"
-    farms_text += f"⚡ Итого (все фермы) с бустом: {round(total_all_boosted_per_hour / 60, 2)} ⭐/мин | {total_all_boosted_per_hour} ⭐/час\n"
+    farms_text += f"Итого (активные): {round(total_active_base_per_hour / 60, 2)} ⭐/мин | {total_active_base_per_hour} ⭐/час\n"
+    farms_text += f"Итого (активные) с бустом: {round(total_active_boosted_per_hour / 60, 2)} ⭐/мин | {total_active_boosted_per_hour} ⭐/час\n"
+    farms_text += f"Итого (все): {round(total_all_base_per_hour / 60, 2)} ⭐/мин | {total_all_base_per_hour} ⭐/час\n"
+    farms_text += f"Итого (все) с бустом: {round(total_all_boosted_per_hour / 60, 2)} ⭐/мин | {total_all_boosted_per_hour} ⭐/час\n"
     
     if inactive_count > 0:
         farms_text += f"\n⚠️ {inactive_count} ферм требуют активации! Используйте /activate"
+
+    upgrade_farms = [f for f in farms if not str(f.get('farm_type', '')).startswith('case_')]
+    if upgrade_farms:
+        farms_text += "\n\n🔧 Улучшения ферм\n"
+        farms_text += "💎 — улучшить доход (шанс 1.2x-2.0x)\n"
+        farms_text += "⚡ — скорость (доход/час)\n"
+        farms_text += "📦 — лимит накопления\n\n"
+        
+        for f in upgrade_farms[:10]:
+            farm_type = f.get('farm_type')
+            farm_data = farm_defs.get(farm_type, {})
+            farm_name = farm_data.get('name', str(farm_type))
+            speed_level = int(f.get('speed_level', 1) or 1)
+            cap_level = int(f.get('cap_level', 1) or 1)
+            farm_id = f.get('id')
+            
+            # Get current boost level if any
+            boost = 1.0
+            if farm_id:
+                async with aiosqlite.connect(DB_NAME) as db:
+                    db.row_factory = aiosqlite.Row
+                    cursor = await db.execute(
+                        "SELECT income_boost, upgrade_level FROM farm_upgrades WHERE farm_id = ?",
+                        (farm_id,)
+                    )
+                    result = await cursor.fetchone()
+                    if result and result['income_boost']:
+                        boost = result['income_boost']
+                        boost_pct = int((boost - 1) * 100)
+                        boost_text = f" | 💎 +{boost_pct}%"
+                    else:
+                        boost_text = ""
+            
+            farms_text += f"🆔 {farm_id} — {farm_name} | ⚡{speed_level}/10 | 📦{cap_level}/10{boost_text}\n"
+            
+        if len(upgrade_farms) > 10:
+            farms_text += "... (показаны первые 10)\n"
+
+    kb = None
+    if message.chat.type == "private" and upgrade_farms:
+        kb = InlineKeyboardMarkup(inline_keyboard=[])
+        for f in upgrade_farms[:10]:
+            farm_id = f.get('id')
+            if not farm_id:
+                continue
+                
+            # Get current upgrade level for cost calculation
+            current_level = 0
+            async with aiosqlite.connect(DB_NAME) as db:
+                db.row_factory = aiosqlite.Row
+                cursor = await db.execute(
+                    "SELECT upgrade_level FROM farm_upgrades WHERE farm_id = ?",
+                    (farm_id,)
+                )
+                result = await cursor.fetchone()
+                if result and result['upgrade_level'] is not None:
+                    current_level = result['upgrade_level']
+            
+            # Calculate upgrade cost (100 stars per level)
+            upgrade_cost = 100 * (current_level + 1)
+            
+            # Add upgrade button
+            kb.inline_keyboard.append([
+                InlineKeyboardButton(
+                    text=f"💎 Улучшить доход ({upgrade_cost}⭐)", 
+                    callback_data=f"upgrade_farm_{farm_id}"
+                )
+            ])
+            
+            # Keep the old speed/capacity buttons for now
+            kb.inline_keyboard.append([
+                InlineKeyboardButton(text=f"⚡ {farm_id}", callback_data=f"up_speed_{farm_id}"),
+                InlineKeyboardButton(text=f"📦 {farm_id}", callback_data=f"up_cap_{farm_id}")
+            ])
+            
+        kb.inline_keyboard.append([InlineKeyboardButton(text="🔄 Обновить", callback_data="refresh_farms")])
     
     if message.chat.type == "private":
-        await message.answer(farms_text)
+        await message.answer(farms_text, reply_markup=kb)
     else:
         await message.reply(farms_text)
+
+
+@dp.callback_query(F.data == "refresh_farms")
+async def refresh_farms(callback: CallbackQuery):
+    await show_farms_handler(callback.message)
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("up_speed_"))
+async def upgrade_speed(callback: CallbackQuery):
+    try:
+        user_id = callback.from_user.id
+        farm_id = int(callback.data.split("_")[-1])
+        # Show info about the new upgrade system
+        await callback.answer(
+            "ℹ️ Система улучшений обновлена!\n"
+            "Теперь используйте кнопку 💎 Улучшить для увеличения дохода фермы.\n"
+            "Улучшение даёт шанс получить множитель дохода от 1.2x до 2x!",
+            show_alert=True
+        )
+    except Exception as e:
+        await callback.answer(f"❌ Ошибка: {str(e)}", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("up_cap_"))
+async def upgrade_capacity(callback: CallbackQuery):
+    try:
+        user_id = callback.from_user.id
+        farm_id = int(callback.data.split("_")[-1])
+        # Show info about the new upgrade system
+        await callback.answer(
+            "ℹ️ Система улучшений обновлена!\n"
+            "Теперь используйте кнопку 💎 Улучшить для увеличения дохода фермы.\n"
+            "Улучшение даёт шанс получить множитель дохода от 1.2x до 2x!",
+            show_alert=True
+        )
+    except Exception as e:
+        await callback.answer(f"❌ Ошибка: {str(e)}", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("upgrade_farm_"))
+async def upgrade_farm_handler(callback: CallbackQuery):
+    try:
+        user_id = callback.from_user.id
+        farm_id = int(callback.data.split("_")[-1])
+        
+        # Call the new upgrade_farm function
+        success, message = await upgrade_farm(farm_id, user_id)
+        
+        if success:
+            # Show success message with the result
+            await callback.answer(f"🎉 {message}", show_alert=True)
+            # Refresh the farms display
+            await show_farms_handler(callback.message)
+        else:
+            # Show error message
+            await callback.answer(f"❌ {message}", show_alert=True)
+            
+    except Exception as e:
+        await callback.answer(f"❌ Ошибка: {str(e)}", show_alert=True)
+
 
 @dp.message(Command("farm_ids"))
 async def cmd_farm_ids(message: Message):
@@ -877,17 +1304,25 @@ async def cmd_farm_ids(message: Message):
             await message.reply("🌾 У вас нет ферм.")
         return
 
-    text = "🌾 Ваши фермы (ID для трейдов):\n\n"
+    text = "🌾 Ваши фермы:\n\n"
     for farm in farms:
         farm_id = farm.get('id')
         farm_type = farm.get('farm_type')
-        farm_name = FARM_TYPES.get(farm_type, {}).get('name', str(farm_type))
+        farm_defs = {}
+        farm_defs.update(FARM_TYPES)
+        farm_defs.update(CASE_FARM_TYPES)
+        farm_name = farm_defs.get(farm_type, {}).get('name', str(farm_type))
         text += f"🆔 {farm_id} — {farm_name}\n"
 
     if message.chat.type == "private":
         await message.answer(text)
     else:
         await message.reply(text)
+
+
+@dp.message(F.text == "🗓 Субботние фермы")
+async def saturday_button(message: Message):
+    await cmd_saturday(message)
 
 @dp.message(Command("shop"))
 async def cmd_shop(message: Message):
@@ -902,7 +1337,7 @@ async def show_farm_shop_handler(message: Message):
     stars = await get_user_stars(user_id)
 
     keyboard = await build_farm_shop_keyboard(user_id)
-    shop_text = f"🛒 Магазин ферм\n\n⭐ Ваши звезды: {stars}\n\nВыберите ферму:"
+    shop_text = f"🛒 Магазин ферм\n\nБаланс: {stars} ⭐\n\nВыбери ферму:"
 
     if message.chat.type == "private":
         await message.answer(shop_text, reply_markup=keyboard)
@@ -912,15 +1347,121 @@ async def show_farm_shop_handler(message: Message):
 async def build_farm_shop_keyboard(user_id: int) -> InlineKeyboardMarkup:
     keyboard = InlineKeyboardMarkup(inline_keyboard=[])
     for farm_id, farm in FARM_TYPES.items():
-        price = await get_farm_dynamic_price(user_id, farm_id)
         keyboard.inline_keyboard.append([
             InlineKeyboardButton(
-                text=f"{farm['name']} - {price}⭐ ({farm['income_per_hour']}⭐/час)",
-                callback_data=f"buy_farm_{farm_id}"
+                text=f"{farm['name']}",
+                callback_data=f"view_farm_{farm_id}"
             )
         ])
+    keyboard.inline_keyboard.append([InlineKeyboardButton(text="🗓 Субботние фермы", callback_data="open_saturday")])
     keyboard.inline_keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")])
     return keyboard
+
+
+@dp.callback_query(F.data.startswith("view_farm_"))
+async def view_farm_card(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    farm_id = callback.data.split("_")[-1]
+    if farm_id not in FARM_TYPES:
+        await callback.answer("❌ Нет такой фермы", show_alert=True)
+        return
+
+    farm = FARM_TYPES[farm_id]
+    price = await get_farm_dynamic_price(user_id, farm_id)
+    income_per_hour = int(farm.get('income_per_hour', 0) or 0)
+    income_per_min = round(income_per_hour / 60, 2)
+    owned = 0
+    try:
+        farms = await get_user_farms(user_id)
+        owned = sum(1 for f in farms if f.get('farm_type') == farm_id)
+    except Exception:
+        owned = 0
+
+    text = (
+        f"🌾 {farm.get('name')}\n\n"
+        f"Цена: {price} ⭐\n"
+        f"Доход: {income_per_min} ⭐/мин | {income_per_hour} ⭐/час\n"
+        f"У вас: {owned} шт.\n"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"Купить за {price} ⭐", callback_data=f"buy_farm_{farm_id}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_farm_shop")]
+    ])
+
+    await callback.message.edit_text(text, reply_markup=kb)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "back_farm_shop")
+async def back_farm_shop(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    stars = await get_user_stars(user_id)
+    keyboard = await build_farm_shop_keyboard(user_id)
+    shop_text = f"🛒 Магазин ферм\n\nБаланс: {stars} ⭐\n\nВыбери ферму:"
+    await callback.message.edit_text(shop_text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@dp.message(Command("saturday"))
+async def cmd_saturday(message: Message):
+    # lazily create offers only on Saturday
+    await get_or_create_saturday_offers()
+    offers = await get_active_saturday_offers()
+    user_id = message.from_user.id
+    stars = await get_user_stars(user_id)
+    crystals = await get_user_crystals(user_id)
+
+    if not offers:
+        text = "🗓 Субботние фермы\n\nСегодня нет субботнего магазина. Загляни в субботу!"
+        if message.chat.type == "private":
+            await message.answer(text)
+        else:
+            await message.reply(text)
+        return
+
+    text = (
+        "🗓 Субботние фермы (24 часа)\n\n"
+        f"⭐ {stars} | 💎 {crystals}\n\n"
+        "Выбери ферму:"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    for o in offers:
+        ps = int(o.get('price_stars', 0) or 0)
+        pc = int(o.get('price_crystals', 0) or 0)
+        price_txt = f"{pc} 💎" if pc > 0 else f"{ps} ⭐"
+        kb.inline_keyboard.append([
+            InlineKeyboardButton(
+                text=f"{o.get('name')} — {price_txt}",
+                callback_data=f"buy_saturday_{o.get('id')}"
+            )
+        ])
+    kb.inline_keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")])
+
+    if message.chat.type == "private":
+        await message.answer(text, reply_markup=kb)
+    else:
+        await message.reply(text)
+
+
+@dp.callback_query(F.data == "open_saturday")
+async def open_saturday(callback: CallbackQuery):
+    await cmd_saturday(callback.message)
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("buy_saturday_"))
+async def buy_saturday(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    try:
+        offer_id = int(callback.data.split("_")[-1])
+    except Exception:
+        await callback.answer("❌ Ошибка", show_alert=True)
+        return
+
+    ok, msg = await buy_saturday_offer(user_id, offer_id)
+    await callback.answer(("✅ " if ok else "❌ ") + msg, show_alert=True)
+    await cmd_saturday(callback.message)
 
 @dp.message(Command("nft"))
 async def cmd_nft(message: Message):
@@ -935,16 +1476,124 @@ async def show_nft_shop_handler(message: Message):
     stars = await get_user_stars(user_id)
     
     shop_text = (
-        f"🎁 Магазин NFT подарков\n\n"
-        f"⭐ Ваши звезды: {stars}\n\n"
-        f"NFT дают буст к доходу с ферм!\n\n"
-        f"Выберите NFT:"
+        f"🎁 NFT\n\n"
+        f"Баланс: {stars} ⭐\n"
+        f"NFT даёт буст к доходу.\n\n"
+        f"Выбери NFT:"
     )
     
     if message.chat.type == "private":
-        await message.answer(shop_text, reply_markup=get_nft_shop_keyboard())
+        keyboard = await build_nft_shop_keyboard()
+        await message.answer(shop_text, reply_markup=keyboard)
     else:
         await message.reply(shop_text + "\n💡 В группах используйте команды для покупки")
+
+
+async def build_nft_shop_keyboard() -> InlineKeyboardMarkup:
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+    for nft_id, nft in NFT_GIFTS.items():
+        boost = int((float(nft.get("boost", 1.0)) - 1) * 100)
+        price = int(nft.get('price', 0) or 0)
+
+        limit = nft.get('limit')
+        label = f"{nft['name']} - {price}⭐ (+{boost}%)"
+        callback = f"view_nft_{nft_id}"
+
+        if limit is not None:
+            try:
+                limit_int = int(limit)
+            except Exception:
+                limit_int = 0
+            if limit_int > 0:
+                minted = await get_total_nft_count(nft_id)
+                left = max(0, limit_int - minted)
+                label = f"{nft['name']} - {price}⭐ (+{boost}%) | {left}/{limit_int}"
+                if left <= 0:
+                    callback = "nft_sold_out"
+
+        keyboard.inline_keyboard.append([
+            InlineKeyboardButton(text=label, callback_data=callback)
+        ])
+    keyboard.inline_keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")])
+    return keyboard
+
+
+@dp.callback_query(F.data.startswith("view_nft_"))
+async def view_nft_card(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    nft_id = callback.data[len("view_nft_"):]
+    if nft_id not in NFT_GIFTS:
+        await callback.answer("❌ Нет такого NFT", show_alert=True)
+        return
+
+    nft = NFT_GIFTS[nft_id]
+    price = int(nft.get('price', 0) or 0)
+    boost_pct = int((float(nft.get('boost', 1.0)) - 1) * 100)
+
+    owned = 0
+    try:
+        nfts = await get_user_nfts(user_id)
+        owned = sum(1 for x in nfts if x.get('nft_type') == nft_id)
+    except Exception:
+        owned = 0
+
+    limit = nft.get('limit')
+    left_txt = ""
+    if limit is not None:
+        try:
+            limit_int = int(limit)
+        except Exception:
+            limit_int = 0
+        if limit_int > 0:
+            minted = await get_total_nft_count(nft_id)
+            left = max(0, limit_int - minted)
+            left_txt = f"\nОсталось: {left}/{limit_int}"
+
+    text = (
+        f"🎁 {nft.get('name')}\n\n"
+        f"Цена: {price} ⭐\n"
+        f"Буст: +{boost_pct}% к доходу\n"
+        f"У вас: {owned} шт."
+        f"{left_txt}"
+    )
+
+    buy_cb = f"buy_nft_{nft_id}"
+    if limit is not None:
+        try:
+            limit_int = int(limit)
+        except Exception:
+            limit_int = 0
+        if limit_int > 0:
+            minted = await get_total_nft_count(nft_id)
+            if minted >= limit_int:
+                buy_cb = "nft_sold_out"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"Купить за {price} ⭐", callback_data=buy_cb)],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_nft_shop")]
+    ])
+
+    await callback.message.edit_text(text, reply_markup=kb)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "back_nft_shop")
+async def back_nft_shop(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    stars = await get_user_stars(user_id)
+    shop_text = (
+        f"🎁 NFT\n\n"
+        f"Баланс: {stars} ⭐\n"
+        f"NFT даёт буст к доходу.\n\n"
+        f"Выбери NFT:"
+    )
+    await callback.message.edit_text(shop_text, reply_markup=await build_nft_shop_keyboard())
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "nft_sold_out")
+async def nft_sold_out(callback: CallbackQuery):
+    await callback.answer("❌ Этот NFT закончился", show_alert=True)
 
 @dp.message(Command("activate"))
 async def cmd_activate(message: Message):
@@ -952,7 +1601,7 @@ async def cmd_activate(message: Message):
     farms = await get_user_farms(user_id)
     
     if not farms:
-        response = "У вас нет ферм для активации! Купите фермы в магазине. 🛒"
+        response = "⚡ Активация\n\nФерм нет. Открой /shop"
         if message.chat.type == "private":
             await message.answer(response)
         else:
@@ -963,9 +1612,9 @@ async def cmd_activate(message: Message):
     
     if activated > 0:
         response = (
-            f"✅ Активировано ферм: {activated} из {total}\n\n"
-            f"🌾 Ваши фермы активны на следующие 6 часов!\n"
-            f"💡 Не забудьте собрать доход командой /collect"
+            f"⚡ Активация\n\n"
+            f"Готово: {activated}/{total}\n"
+            f"Действует 6 часов. Сбор: /collect"
         )
     else:
         from datetime import datetime
@@ -989,15 +1638,70 @@ async def cmd_activate(message: Message):
                 f"🔄 Следующая активация через: {hours}ч {minutes}м"
             )
         else:
-            response = (
-                f"✅ Все фермы активированы!\n\n"
-                f"💡 Фермы активны на 6 часов. Используйте /collect для сбора дохода."
-            )
+            response = "⚡ Активация\n\nУже активно. Сбор: /collect"
     
     if message.chat.type == "private":
         await message.answer(response)
     else:
         await message.reply(response)
+
+
+@dp.message(Command("quests"))
+async def cmd_quests(message: Message):
+    q = await get_or_create_global_quest()
+    buff = await get_active_global_buff()
+
+    goal = int(q.get('goal_value', 0) or 0)
+    prog = int(q.get('progress_value', 0) or 0)
+    status = str(q.get('status') or 'active')
+    title = q.get('title') or 'Глобальное задание'
+
+    end_time_raw = q.get('end_time')
+    time_left = ""
+    if end_time_raw:
+        try:
+            end_dt = datetime.fromisoformat(end_time_raw)
+            delta = end_dt - datetime.now()
+            secs = int(delta.total_seconds())
+            if secs > 0:
+                h = secs // 3600
+                m = (secs % 3600) // 60
+                time_left = f"⏳ Осталось: {h}ч {m}м\n"
+        except Exception:
+            time_left = ""
+
+    pct = 0
+    if goal > 0:
+        pct = min(100, int((prog / goal) * 100))
+
+    text = (
+        f"🎯 {title}\n"
+        f"{time_left}"
+        f"Прогресс: {prog}/{goal} ({pct}%)\n"
+        f"Статус: {status}\n"
+    )
+
+    if buff:
+        end_time_raw = buff.get('end_time')
+        buff_left = ""
+        try:
+            end_dt = datetime.fromisoformat(end_time_raw)
+            delta = end_dt - datetime.now()
+            secs = int(delta.total_seconds())
+            if secs > 0:
+                h = secs // 3600
+                m = (secs % 3600) // 60
+                buff_left = f" ({h}ч {m}м)"
+        except Exception:
+            buff_left = ""
+
+        mult = float(buff.get('multiplier', 1.0) or 1.0)
+        text += f"\n🔥 Активный баф: x{mult}{buff_left}"
+
+    if message.chat.type == "private":
+        await message.answer(text)
+    else:
+        await message.reply(text)
 
 @dp.message(Command("crystals"))
 async def cmd_crystals(message: Message):
@@ -1019,18 +1723,18 @@ async def cmd_add_crystals(message: Message):
 
     args = message.text.split()
     if len(args) < 3:
-        await message.reply("Использование: /add_crystals <target> <amount>\nTarget: internal_id | telegram_id | @username")
+        await message.reply("/add_crystals <target> <amount>\nTarget: internal_id | telegram_id | @username")
         return
 
     target = args[1]
     try:
         amount = int(args[2])
     except ValueError:
-        await message.reply("❌ amount должен быть числом")
+        await message.reply("❌ Сумма должна быть числом")
         return
 
     if amount == 0:
-        await message.reply("❌ amount не может быть 0")
+        await message.reply("❌ Сумма не может быть 0")
         return
 
     resolved = await resolve_target_user(target)
@@ -1039,7 +1743,7 @@ async def cmd_add_crystals(message: Message):
         return
 
     await add_crystals(resolved['user_id'], amount)
-    await message.reply(f"✅ Выдано кристаллов: {amount} 💎\nКому: {target} (tg_id={resolved['user_id']}, id={resolved.get('internal_id')})")
+    await message.reply(f"✅ Выдано: {amount} 💎 → {target} (tg_id={resolved['user_id']}, id={resolved.get('internal_id')})")
 
 @dp.message(Command("add_stars"))
 async def cmd_add_stars(message: Message):
@@ -1048,14 +1752,14 @@ async def cmd_add_stars(message: Message):
 
     args = message.text.split()
     if len(args) < 3:
-        await message.reply("Использование: /add_stars <target> <amount>\nTarget: internal_id | telegram_id | @username")
+        await message.reply("/add_stars <target> <amount>\nTarget: internal_id | telegram_id | @username")
         return
 
     target = args[1]
     try:
         amount = int(args[2])
     except ValueError:
-        await message.reply("❌ amount должен быть числом")
+        await message.reply("❌ Сумма должна быть числом")
         return
 
     if amount == 0:
@@ -1068,23 +1772,23 @@ async def cmd_add_stars(message: Message):
         return
 
     await add_stars(resolved['user_id'], amount)
-    await message.reply(f"✅ Выдано звезд: {amount} ⭐\nКому: {target} (tg_id={resolved['user_id']}, id={resolved.get('internal_id')})")
+    await message.reply(f"✅ Выдано: {amount} ⭐ → {target} (tg_id={resolved['user_id']}, id={resolved.get('internal_id')})")
 
 @dp.message(Command("send_crystals"))
 async def cmd_send_crystals(message: Message):
     args = message.text.split()
     if len(args) < 3:
-        await message.reply("Использование: /send_crystals <target> <amount>\nTarget: internal_id | telegram_id | @username")
+        await message.reply("/send_crystals <target> <amount>\nTarget: internal_id | telegram_id | @username")
         return
 
     try:
         amount = int(args[2])
     except ValueError:
-        await message.reply("❌ Неверный формат. Используйте: /send_crystals <target> <amount>")
+        await message.reply("❌ Сумма должна быть числом")
         return
 
     if amount <= 0:
-        await message.reply("❌ Сумма должна быть больше 0")
+        await message.reply("❌ Сумма должна быть > 0")
         return
 
     resolved = await resolve_target_user(args[1])
@@ -1103,7 +1807,7 @@ async def cmd_send_crystals(message: Message):
         await message.reply("❌ Недостаточно кристаллов")
         return
 
-    await message.reply(f"✅ Вы отправили {amount} 💎 пользователю {args[1]}")
+    await message.reply(f"✅ Отправлено: {amount} 💎 → {args[1]}")
     try:
         await bot.send_message(to_user_id, f"💎 Вам пришли кристаллы: +{amount}\nОт игрока ID { (await get_or_create_user(from_user_id)).get('internal_id', 'N/A') }")
     except Exception:
@@ -1151,9 +1855,25 @@ async def buy_crystal_item(callback: CallbackQuery):
 async def cmd_cases(message: Message):
     user_id = message.from_user.id
     crystals = await get_user_crystals(user_id)
+    stars = await get_user_stars(user_id)
 
-    text = f"🎁 Кейсы за кристаллы\n\n💠 У вас: {crystals} 💎\n\nВыберите кейс:"
+    text = (
+        "🎁 Кейсы\n\n"
+        f"Баланс: {stars} ⭐ | {crystals} 💎\n\n"
+        "Выбери кейс:"
+    )
     kb = InlineKeyboardMarkup(inline_keyboard=[])
+
+    kb.inline_keyboard.append([InlineKeyboardButton(text="⭐ Кейсы с фермами", callback_data="cases_star")])
+    for case_id, case in STAR_FARM_CASES.items():
+        kb.inline_keyboard.append([
+            InlineKeyboardButton(
+                text=f"{case['name']} — {case['price_stars']} ⭐",
+                callback_data=f"open_star_case_{case_id}"
+            )
+        ])
+
+    kb.inline_keyboard.append([InlineKeyboardButton(text="💎 Кейсы (кристаллы)", callback_data="cases_crystal")])
     for case_id, case in CRYSTAL_CASES.items():
         kb.inline_keyboard.append([
             InlineKeyboardButton(
@@ -1161,6 +1881,8 @@ async def cmd_cases(message: Message):
                 callback_data=f"open_case_{case_id}"
             )
         ])
+
+    kb.inline_keyboard.append([InlineKeyboardButton(text="📜 История дропа", callback_data="case_history")])
     kb.inline_keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")])
 
     if message.chat.type == "private":
@@ -1229,6 +1951,8 @@ async def open_case(callback: CallbackQuery):
     else:
         await add_stars(user_id, 100)
         reward_text = "⭐ 100 звезд"
+
+    await add_xp(user_id, 10)
 
     stars = await get_user_stars(user_id)
     crystals = await get_user_crystals(user_id)
@@ -1367,7 +2091,7 @@ async def cmd_casino(message: Message):
     if message.chat.type == "private":
         await message.answer("🎰 Казино\n\nВыберите игру:", reply_markup=get_casino_menu())
     else:
-        await message.reply("🎰 Казино\n\nВ группах используйте команды.")
+        await message.reply("🎰 Казино\n\nВ группах — через команды.")
 
 @dp.message(F.text == "🎰 Казино")
 async def show_casino(message: Message):
@@ -1395,7 +2119,10 @@ async def cmd_auction(message: Message):
         text += "🌾 Фермы:\n\n"
     for auction in auctions:
         farm_type = auction.get("farm_type")
-        farm_name = FARM_TYPES.get(farm_type, {}).get("name", str(farm_type))
+        farm_defs = {}
+        farm_defs.update(FARM_TYPES)
+        farm_defs.update(CASE_FARM_TYPES)
+        farm_name = farm_defs.get(farm_type, {}).get("name", str(farm_type))
 
         end_time_raw = auction.get("end_time")
         time_left_text = ""
@@ -1459,7 +2186,10 @@ async def cmd_auction(message: Message):
                     time_left_text = ""
 
             farm_type = a.get('farm_type')
-            farm_name = FARM_TYPES.get(farm_type, {}).get('name', str(farm_type))
+            farm_defs = {}
+            farm_defs.update(FARM_TYPES)
+            farm_defs.update(CASE_FARM_TYPES)
+            farm_name = farm_defs.get(farm_type, {}).get('name', str(farm_type))
             text += (
                 f"🆔 ID: {a.get('id')}\n"
                 f"🌾 Лот: {farm_name}\n"
@@ -1494,12 +2224,13 @@ async def cmd_auction(message: Message):
                 "\n"
             )
 
-    text += "Чтобы сделать ставку на ферму: /bid <id> <сумма>\n"
-    text += "Чтобы сделать ставку на предмет: /bid_item <id> <сумма>\n"
-    text += "Ставка на ферму игрока: /bid_ufarm <id> <сумма>\n"
-    text += "Ставка на NFT игрока: /bid_unft <id> <сумма>\n"
-    text += "Чтобы выставить предмет: /sell_item <item_key> <qty> <start_price>"
-    text += "\nВыставить ферму/NFT: /aucsell <farm|nft> <key> <start_price>"
+    text += "\nКоманды:\n"
+    text += "/bid <id> <ставка> — ферма\n"
+    text += "/bid_item <id> <ставка> — предмет\n"
+    text += "/bid_ufarm <id> <ставка> — ферма игрока\n"
+    text += "/bid_unft <id> <ставка> — NFT игрока\n"
+    text += "/sell_item <item_key> <qty> <start_price>\n"
+    text += "/aucsell <farm|nft> <key> <start_price>"
 
     if message.chat.type == "private":
         await message.answer(text)
@@ -1515,17 +2246,17 @@ async def cmd_sell_item(message: Message):
     user_id = message.from_user.id
     args = message.text.split()
     if len(args) < 4:
-        await message.reply("Использование: /sell_item <item_key> <qty> <start_price>")
+        await message.reply("/sell_item <item_key> <qty> <start_price>")
         return
     item_key = args[1]
     try:
         qty = int(args[2])
         start_price = int(args[3])
     except ValueError:
-        await message.reply("❌ qty и start_price должны быть числами")
+        await message.reply("❌ Кол-во и цена должны быть числами")
         return
     if qty <= 0 or start_price <= 0:
-        await message.reply("❌ qty и start_price должны быть > 0")
+        await message.reply("❌ Кол-во и цена должны быть > 0")
         return
 
     lot_id = await create_item_auction(user_id, item_key, qty, start_price, duration_hours=24)
@@ -1540,13 +2271,13 @@ async def cmd_bid_item(message: Message):
     user_id = message.from_user.id
     args = message.text.split()
     if len(args) < 3:
-        await message.reply("Использование: /bid_item <auction_id> <amount>")
+        await message.reply("/bid_item <auction_id> <amount>")
         return
     try:
         auction_id = int(args[1])
         amount = int(args[2])
     except ValueError:
-        await message.reply("❌ auction_id и amount должны быть числами")
+        await message.reply("❌ ID и ставка должны быть числами")
         return
     ok, msg = await place_item_bid(auction_id, user_id, amount)
     if ok:
@@ -1559,13 +2290,13 @@ async def cmd_bid_ufarm(message: Message):
     user_id = message.from_user.id
     args = message.text.split()
     if len(args) < 3:
-        await message.reply("Использование: /bid_ufarm <auction_id> <amount>")
+        await message.reply("/bid_ufarm <auction_id> <amount>")
         return
     try:
         auction_id = int(args[1])
         amount = int(args[2])
     except ValueError:
-        await message.reply("❌ auction_id и amount должны быть числами")
+        await message.reply("❌ ID и ставка должны быть числами")
         return
     ok, msg = await place_user_farm_bid(auction_id, user_id, amount)
     if ok:
@@ -1578,13 +2309,13 @@ async def cmd_bid_unft(message: Message):
     user_id = message.from_user.id
     args = message.text.split()
     if len(args) < 3:
-        await message.reply("Использование: /bid_unft <auction_id> <amount>")
+        await message.reply("/bid_unft <auction_id> <amount>")
         return
     try:
         auction_id = int(args[1])
         amount = int(args[2])
     except ValueError:
-        await message.reply("❌ auction_id и amount должны быть числами")
+        await message.reply("❌ ID и ставка должны быть числами")
         return
     ok, msg = await place_user_nft_bid(auction_id, user_id, amount)
     if ok:
@@ -1668,6 +2399,36 @@ async def collect_income_handler(message: Message):
     total_income_per_min = round(total_income_per_hour / 60, 2)
     
     if income > 0:
+        try:
+            await add_global_quest_progress(income)
+        except Exception:
+            pass
+
+        unlocked_text = ""
+        try:
+            _, unlocked = await increment_user_stat(user_id, 'stars_collected', income)
+            if unlocked:
+                unlocked_lines = []
+                for u in unlocked:
+                    rs = int(u.get('reward_stars', 0) or 0)
+                    rc = int(u.get('reward_crystals', 0) or 0)
+                    rew = ""
+                    if rs > 0:
+                        rew += f" +{rs}⭐"
+                    if rc > 0:
+                        rew += f" +{rc}💎"
+                    unlocked_lines.append(f"🏅 {u.get('title')}{rew}")
+                unlocked_text = "\n" + "\n".join(unlocked_lines)
+        except Exception:
+            pass
+        xp_gain = income // 10
+        xp_info = await add_xp(user_id, xp_gain)
+        xp_text = ""
+        if xp_gain > 0:
+            if xp_info.get('leveled_up'):
+                xp_text = f"\n✨ XP: +{xp_gain} (уровень ↑ на {xp_info.get('levels_gained')})"
+            else:
+                xp_text = f"\n✨ XP: +{xp_gain}"
         boost_text = ""
         if boost > 1.0:
             boost_text = f"\n⚡ Буст от NFT: {int((boost - 1) * 100)}%"
@@ -1677,12 +2438,10 @@ async def collect_income_handler(message: Message):
             crystals_text = f"\n💎 Найдено кристаллов: +{crystals_gained}" 
         
         response = (
-            f"💰 Вы собрали доход!\n\n"
-            f"⭐ Получено: {income} звезд{boost_text}\n"
-            f"💎 Всего звезд: {stars}\n"
-            f"💠 Кристаллов: {crystals}{crystals_text}\n\n"
-            f"📊 Текущий доход ({active_farms_count} активных ферм):\n"
-            f"   {total_income_per_min} ⭐/мин | {total_income_per_hour} ⭐/час"
+            f"💰 Доход собран\n\n"
+            f"+{income} ⭐{boost_text}{xp_text}{unlocked_text}\n"
+            f"Баланс: {stars} ⭐ | {crystals} 💎{crystals_text}\n\n"
+            f"Сейчас ({active_farms_count} активных): {total_income_per_min} ⭐/мин | {total_income_per_hour} ⭐/час"
         )
         if boost > 1.0:
             response += f"\n   ⚡ С бустом: {total_income_per_min_boosted} ⭐/мин | {total_income_per_hour_boosted} ⭐/час"
@@ -1724,6 +2483,13 @@ async def handle_buy_farm(callback: CallbackQuery):
     success = await buy_farm_dynamic(user_id, farm_id, price)
     
     if success:
+        xp_gain = max(5, min(20, int(price / 100)))
+        await add_xp(user_id, xp_gain)
+
+        try:
+            await increment_user_stat(user_id, 'farms_bought', 1)
+        except Exception:
+            pass
         stars = await get_user_stars(user_id)
         await callback.answer(
             f"✅ Вы купили {farm_data['name']}!",
@@ -1736,107 +2502,57 @@ async def handle_buy_farm(callback: CallbackQuery):
             reply_markup=keyboard
         )
     else:
-        stars = await get_user_stars(user_id)
-        await callback.answer(
-            f"❌ Недостаточно звезд! Нужно {price}, у вас {stars}",
-            show_alert=True
-        )
+        await callback.answer("❌ Недостаточно звезд!", show_alert=True)
 
-@dp.callback_query(F.data == "casino_mines")
-async def casino_mines_handler(callback: CallbackQuery):
-    from keyboards import get_mines_bet_keyboard
-    await callback.message.edit_text(
-        "💣 Мины\n\n"
-        "Выберите сумму ставки:",
-        reply_markup=get_mines_bet_keyboard()
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "mines_custom_bet")
-async def mines_custom_bet(callback: CallbackQuery):
-    pending_bets[callback.from_user.id] = "mines"
-    await callback.message.edit_text(
-        "💣 Мины\n\nВведите сумму ставки (мин. 10 ⭐):",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="casino_mines")]
-        ])
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "casino_dice")
-async def casino_dice_handler(callback: CallbackQuery):
-    await callback.message.edit_text(
-        "🎲 Кости\n\nВыберите сумму ставки:",
-        reply_markup=get_dice_bet_keyboard()
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "dice_custom_bet")
-async def dice_custom_bet(callback: CallbackQuery):
-    pending_bets[callback.from_user.id] = "dice"
-    await callback.message.edit_text(
-        "🎲 Кости\n\nВведите сумму ставки (мин. 10 ⭐):",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="casino_dice")]
-        ])
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "casino_slots")
-async def casino_slots_handler(callback: CallbackQuery):
-    await callback.message.edit_text(
-        "🎰 Слоты\n\nВыберите сумму ставки:",
-        reply_markup=get_slots_bet_keyboard()
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "slots_custom_bet")
-async def slots_custom_bet(callback: CallbackQuery):
-    pending_bets[callback.from_user.id] = "slots"
-    await callback.message.edit_text(
-        "🎰 Слоты\n\nВведите сумму ставки (мин. 10 ⭐):",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="casino_slots")]
-        ])
-    )
-    await callback.answer()
 
 @dp.callback_query(F.data.startswith("buy_nft_"))
 async def handle_buy_nft(callback: CallbackQuery):
     try:
         nft_id = callback.data[len("buy_nft_"):]
         user_id = callback.from_user.id
-        
+
         if nft_id not in NFT_GIFTS:
             await callback.answer("❌ Такого NFT не существует!", show_alert=True)
             return
-        
-        nft = NFT_GIFTS[nft_id]
+
+        limit = NFT_GIFTS[nft_id].get('limit')
+        if limit is not None:
+            try:
+                limit_int = int(limit)
+            except Exception:
+                limit_int = 0
+            if limit_int > 0:
+                minted = await get_total_nft_count(nft_id)
+                if minted >= limit_int:
+                    await callback.answer("❌ Этот NFT закончился", show_alert=True)
+                    return
+
         user_stars = await get_user_stars(user_id)
-        
-        if user_stars < nft['price']:
-            await callback.answer(f"❌ Недостаточно звезд! Нужно {nft['price']} ⭐", show_alert=True)
+        nft_price = int(NFT_GIFTS[nft_id].get("price", 0) or 0)
+
+        if user_stars < nft_price:
+            await callback.answer("❌ Недостаточно звезд!", show_alert=True)
             return
-        
-        # Check if user already has this NFT
-        user_nfts = await get_user_nfts(user_id)
-        if any(item.get('nft_type') == nft_id for item in user_nfts):
+
+        already = await get_user_nfts(user_id)
+        if any(item.get('nft_type') == nft_id for item in already):
             await callback.answer("❌ У вас уже есть этот NFT!", show_alert=True)
             return
-        
+
         success = await buy_nft(user_id, nft_id)
-        if success:
-            await callback.answer(f"🎉 Поздравляем! Вы купили {nft['name']}!", show_alert=True)
-            stars = await get_user_stars(user_id)
-            await callback.message.edit_text(
-                f"✅ Куплено: {nft['name']}\n\n⭐ Осталось звезд: {stars}",
-                reply_markup=get_nft_shop_keyboard()
-            )
-        else:
+        if not success:
             await callback.answer("❌ Ошибка при покупке NFT. Попробуйте позже.", show_alert=True)
+            return
+
+        stars_now = await get_user_stars(user_id)
+        await callback.answer(f"✅ Вы купили {NFT_GIFTS[nft_id]['name']}!", show_alert=True)
+        await callback.message.edit_text(
+            f"✅ Куплено: {NFT_GIFTS[nft_id]['name']}\n\n⭐ Осталось звезд: {stars_now}",
+            reply_markup=await build_nft_shop_keyboard()
+        )
     except Exception as e:
-        logger.error(f"Error in handle_buy_nft: {str(e)}")
-        await callback.answer("❌ Произошла ошибка. Пожалуйста, попробуйте позже.", show_alert=True)
+        logger.error(f"Ошибка при покупке NFT: {e}")
+        await callback.answer("❌ Ошибка при покупке NFT", show_alert=True)
 
 @dp.message(F.text.isdigit())
 async def handle_mines_bet(message: Message):

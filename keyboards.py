@@ -8,8 +8,13 @@ def get_main_menu():
             [KeyboardButton(text="🛒 Магазин ферм"), KeyboardButton(text="🎁 Магазин NFT")],
             [KeyboardButton(text="💰 Собрать доход"), KeyboardButton(text="⚡ Активировать фермы")],
             [KeyboardButton(text="🎁 Кейсы"), KeyboardButton(text="🎒 Инвентарь"), KeyboardButton(text="🏁 Конкурсы")],
+            [KeyboardButton(text="🎯 Задания")],
+            [KeyboardButton(text="🏅 Достижения")],
+            [KeyboardButton(text="🗓 Субботние фермы")],
             [KeyboardButton(text="🔗 Реферальная ссылка")],
-            [KeyboardButton(text="🏆 Топ игроков"), KeyboardButton(text="🔨 Аукцион"), KeyboardButton(text="🎰 Казино")]
+            [KeyboardButton(text="🏆 Топ игроков"), KeyboardButton(text="📜 Архив топа")],
+            [KeyboardButton(text="🛍 NFT Маркет")],
+            [KeyboardButton(text="🔨 Аукцион"), KeyboardButton(text="🎰 Казино")]
         ],
         resize_keyboard=True
     )
@@ -19,21 +24,21 @@ def get_farm_shop_keyboard():
     for farm_id, farm in FARM_TYPES.items():
         keyboard.inline_keyboard.append([
             InlineKeyboardButton(
-                text=f"{farm['name']} - {farm['price']}⭐ ({farm['income_per_hour']}⭐/час)",
-                callback_data=f"buy_farm_{farm_id}"
+                text=f"{farm['name']}",
+                callback_data=f"view_farm_{farm_id}"
             )
         ])
+    keyboard.inline_keyboard.append([InlineKeyboardButton(text="🗓 Субботние фермы", callback_data="open_saturday")])
     keyboard.inline_keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")])
     return keyboard
 
 def get_nft_shop_keyboard():
     keyboard = InlineKeyboardMarkup(inline_keyboard=[])
     for nft_id, nft in NFT_GIFTS.items():
-        boost = int((nft["boost"] - 1) * 100)
         keyboard.inline_keyboard.append([
             InlineKeyboardButton(
-                text=f"{nft['name']} - {nft['price']}⭐ (+{boost}%)",
-                callback_data=f"buy_nft_{nft_id}"
+                text=f"{nft['name']}",
+                callback_data=f"view_nft_{nft_id}"
             )
         ])
     keyboard.inline_keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")])
